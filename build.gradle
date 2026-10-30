@@ -1,0 +1,108 @@
+// Adapted from the official 26.3 MDK; see upstream.lock.json and docs/changes/.
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev' version '2.0.148'
+    id 'idea'
+}
+
+version = mod_version
+group = mod_group_id
+base.archivesName = mod_id
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(25)
+    withSourcesJar()
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation platform('org.junit:junit-bom:5.12.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'com.google.code.gson:gson:2.14.0'
+    testImplementation 'org.joml:joml:1.10.9'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test', Test).configure {
+    useJUnitPlatform()
+}
+
+// An external package consumes the packaged public API, without main/test source output on its classpath.
+sourceSets {
+    addonTest { }
+}
+dependencies {
+    addonTestImplementation platform('org.junit:junit-bom:5.12.2')
+    addonTestImplementation 'org.junit.jupiter:junit-jupiter'
+    addonTestImplementation files(tasks.named('jar'))
+    addonTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+tasks.register('addonTest', Test) {
+    description = 'Checks addon registration contracts against the packaged Onomixel JAR.'
+    group = 'verification'
+    dependsOn tasks.named('jar')
+    testClassesDirs = sourceSets.addonTest.output.classesDirs
+    classpath = sourceSets.addonTest.runtimeClasspath
+    useJUnitPlatform()
+}
+tasks.named('check').configure { dependsOn tasks.named('addonTest') }
+
+neoForge {
+    version = project.neo_version
+
+    runs {
+        client {
+            client()
+        }
+        // Kept for future client-only loading smoke checks; no EULA is accepted by setup.
+        server {
+            server()
+            programArgument '--nogui'
+        }
+        configureEach {
+            logLevel = org.slf4j.event.Level.INFO
+        }
+    }
+
+    mods {
+        "${mod_id}" {
+            sourceSet(sourceSets.main)
+        }
+    }
+}
+
+var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
+    var replaceProperties = [
+        minecraft_version_range: minecraft_version_range,
+        neo_version_range      : neo_version_range,
+        mod_id                 : mod_id,
+        mod_name               : mod_name,
+        mod_license            : mod_license,
+        mod_version            : mod_version,
+    ]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from 'src/main/templates'
+    into 'build/generated/sources/modMetadata'
+}
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 25
+}
+
+tasks.named('wrapper', Wrapper).configure {
+    gradleVersion = '9.2.1'
+    distributionType = Wrapper.DistributionType.BIN
+    distributionSha256Sum = '72f44c9f8ebcb1af43838f45ee5c4aa9c5444898b3468ab3f4af7b6076c5bc3f'
+}
+
+idea.module {
+    downloadSources = true
+}
+

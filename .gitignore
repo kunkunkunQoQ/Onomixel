@@ -1,0 +1,32 @@
+# Gradle build outputs & caches
+.gradle/
+build/
+
+# Minecraft client/server runtime data & logs
+run/
+runs/
+run-data/
+logs/
+crash-reports/
+
+# IDE configurations
+.idea/
+*.iml
+.vscode/
+*.ipr
+*.iws
+
+# OS-specific
+Thumbs.db
+.DS_Store
+
+# Internal testing & QA suites (excluded from release repo)
+src/test/
+src/addonTest/
+
+# Internal workspace development documentation & logs
+docs/
+scripts/
+AI_CONTEXT.md
+CHANGELOG.md
+设计.md

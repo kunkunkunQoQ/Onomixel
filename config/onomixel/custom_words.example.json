@@ -1,0 +1,74 @@
+{
+  "$schema": "https://onomixel.kunkun.dev/schemas/v1/custom_words.json",
+  "priority": 100,
+  "comment": "Onomixel 漫画拟声词自定义配置模板（支持日漫、美漫、加权随机池与动效包络）",
+  "overrides": [
+    {
+      "comment": "【美式波普风格】TNT 点燃爆轰：经典大写撞色 + 方案1定格爆刺",
+      "match": "minecraft:entity.tnt.primed",
+      "display": {
+        "mode": "WEIGHTED_RANDOM",
+        "variants": [
+          { "text": "KABOOM!!", "weight": 70 },
+          { "text": "BAAAAM!!", "weight": 20 },
+          { "text": "POW!!", "weight": 10 }
+        ]
+      },
+      "style": {
+        "kinetic_motion": "HITSTOP",
+        "vibrant_color": "#FACC15",
+        "pastel_color": "#FEF08A",
+        "bold": true,
+        "scale_multiplier": 1.35
+      },
+      "physics": {
+        "height_offset": 0.50
+      }
+    },
+    {
+      "comment": "【战术紧迫感】苦力怕引线燃烧：加权多变体 + 24fps 高频战栗颤抖",
+      "match": "minecraft:entity.creeper.primed",
+      "display": {
+        "mode": "WEIGHTED_RANDOM",
+        "variants": [
+          { "text": "嘶——！", "weight": 60 },
+          { "text": "呲呲呲——！", "weight": 30 },
+          { "text": "危！！", "weight": 10 }
+        ]
+      },
+      "style": {
+        "kinetic_motion": "SHAKE",
+        "vibrant_color": "#EF4444",
+        "bold": true
+      }
+    },
+    {
+      "comment": "【日式热血风格】暴击斩击：热血汉字拟声词 + 极光金刀光",
+      "match": "minecraft:entity.player.attack.crit",
+      "display": {
+        "mode": "SINGLE",
+        "text": "斩！！"
+      },
+      "style": {
+        "kinetic_motion": "HITSTOP",
+        "vibrant_color": "#F59E0B",
+        "bold": true,
+        "italic": true,
+        "scale_multiplier": 1.25
+      }
+    },
+    {
+      "comment": "【通配符批量规则】将所有骷髅类生物的射箭声音统一应用针状极速刺出动效",
+      "match": "minecraft:entity.skeleton*.shoot",
+      "display": {
+        "mode": "SINGLE",
+        "text": "嗖——！"
+      },
+      "style": {
+        "kinetic_motion": "PIERCE",
+        "vibrant_color": "#0EA5E9",
+        "scale_multiplier": 1.10
+      }
+    }
+  ]
+}

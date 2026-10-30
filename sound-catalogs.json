@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "inventory": {
+    "path": "../../docs/research/vanilla-sound-inventory-26.3.json",
+    "namespace": "minecraft",
+    "intentionallyEmptySentinels": [
+      "minecraft:intentionally_empty"
+    ]
+  },
+  "allowCatalogs": [
+    { "path": "docs/research/catalogs/base-sounds.json", "specialPolicies": [] },
+    { "path": "docs/research/catalogs/block-sounds.json", "specialPolicies": [] },
+    { "path": "docs/research/catalogs/mob-sounds.json", "specialPolicies": [] },
+    { "path": "docs/research/catalogs/action-ambient-sounds.json", "specialPolicies": [] },
+    { "path": "docs/research/catalogs/expanded-sounds.json", "specialPolicies": [] },
+    { "path": "docs/research/catalogs/comprehensive-block-item.json", "specialPolicies": ["self-step-callsite-filter"] },
+    { "path": "docs/research/catalogs/comprehensive-entities.json", "specialPolicies": ["self-step-callsite-filter"] },
+    { "path": "docs/research/catalogs/comprehensive-other.json", "specialPolicies": ["rain-surface-and-weather-gate"] }
+  ],
+  "excludeCatalogs": [
+    { "path": "docs/research/catalogs/excluded-block-item.json" },
+    { "path": "docs/research/catalogs/excluded-entities.json" },
+    { "path": "docs/research/catalogs/excluded-other.json" }
+  ],
+  "specialPolicies": [
+    {
+      "id": "self-step-callsite-filter",
+      "appliesTo": ["minecraft:block.*.step*", "minecraft:entity.*.step*"],
+      "source": "LocalPlayer.java:562-570; inspect PlaySoundEvent caller with StackWalker",
+      "policy": "Exclude only a sound issued by the LocalPlayer.playSound call site; do not infer source by distance.",
+      "validation": "Implemented in SoundEventPolicy/ClientSoundCapture; pure policy tests and dev.4 build passed. Actual LocalPlayer playback path awaits user game validation."
+    },
+    {
+      "id": "rain-surface-and-weather-gate",
+      "appliesTo": ["minecraft:weather.rain", "minecraft:weather.rain.above"],
+      "source": "ClientLevel.java:392-413; collision-shape surface top; isRainingAt observer gate",
+      "policy": "Use a dedicated local surface anchor and rate limit rain captions.",
+      "validation": "Implemented in capture, SoundEmissionThrottle and DynamicSubtitleLayout; dev.4 build and pure throttle tests passed. Roof/surface/weather behavior awaits user game validation."
+    }
+  ]
+}

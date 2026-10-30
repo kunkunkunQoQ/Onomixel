@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "verifiedOn": "2026-10-29",
+  "template": {
+    "repository": "https://github.com/NeoForgeMDKs/MDK-26.3-ModDevGradle",
+    "commit": "f31f90e71a3e8fca9d8b821cb25fb5a767d3a2d6",
+    "archiveUrl": "https://codeload.github.com/NeoForgeMDKs/MDK-26.3-ModDevGradle/zip/f31f90e71a3e8fca9d8b821cb25fb5a767d3a2d6",
+    "archiveSha256": "02ce7634f6f30259ca93bef5e26255e92160a55931c7038ad9c3004bab29a0c7",
+    "copied": ["gradlew", "gradlew.bat", "gradle/wrapper/gradle-wrapper.jar", "TEMPLATE_LICENSE.txt"],
+    "adapted": ["build.gradle", "settings.gradle", "gradle.properties", "gradle/wrapper/gradle-wrapper.properties", "src/main/templates/META-INF/neoforge.mods.toml"],
+    "omitted": ["example gameplay code", "example configuration", "publishing tasks", "CI workflows", "data generation", "Foojay JDK auto-download resolver"],
+    "licenseNote": "Wrapper retains its upstream license headers. Mod license remains All Rights Reserved pending the owner's choice."
+  },
+  "minecraft": "26.3",
+  "neoForge": "26.3.0.99",
+  "modDevGradle": "2.0.148",
+  "gradle": "9.2.1",
+  "gradleDistributionSha256": "72f44c9f8ebcb1af43838f45ee5c4aa9c5444898b3468ab3f4af7b6076c5bc3f",
+  "neoForgeSources": {
+    "url": "https://maven.neoforged.net/releases/net/neoforged/neoforge/26.3.0.99/neoforge-26.3.0.99-sources.jar",
+    "sha256": "568a90af066bf3cf1b665129a37d4b14f1378a50e6815eb5ac9e2e8c37423e54"
+  },
+  "originalDesignSha256": "27b4dddc972b158def9f5e3de889116129931047cadec64dc522773ff9212c9e"
+}
+
