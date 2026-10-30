@@ -3,6 +3,8 @@
 [![Minecraft](https://img.shields.io/badge/Minecraft-26.3-informational?style=flat-square&logo=minecraft)](https://minecraft.net/)
 [![NeoForge](https://img.shields.io/badge/NeoForge-26.3.0.99-orange?style=flat-square)](https://neoforged.net/)
 [![Java](https://img.shields.io/badge/Java-25-blue?style=flat-square&logo=openjdk)](https://adoptium.net/)
+[![Bilibili](https://img.shields.io/badge/Bilibili-%E5%9B%B0%E5%9B%B0%E5%9B%B0QAQzZZ-00A1D6?style=flat-square&logo=bilibili&logoColor=white)](https://space.bilibili.com/2115481637)
+[![爱发电](https://img.shields.io/badge/%E7%88%B1%E5%8F%91%E7%94%B5-koukou021-946ce6?style=flat-square)](https://afdian.com/a/koukou021)
 [![License](https://img.shields.io/badge/License-All%20Rights%20Reserved-lightgrey?style=flat-square)](#-license)
 
 **Onomixel** 是专为 Minecraft 打造的新一代**空间拟声词可视化**与**视界外战术威胁预警**纯客户端 Mod。通过在 3D 世界空间中动态呈现具有漫画质感的拟声字形与动效，并将视界外的致命威胁实时映射到屏幕边缘雷达，为玩家带来沉浸式且具战术价值的视听体验。
@@ -99,6 +101,13 @@ build/libs/onomixel-<version>.jar
   ]
 }
 ```
+
+---
+
+## 💬 关注与支持
+
+- 📺 **Bilibili**：欢迎关注 [困困困QAQzZZ 的个人空间](https://space.bilibili.com/2115481637)，获取最新演示视频与开发进展。
+- ⚡ **爱发电**：如果喜欢这个项目，欢迎前往 [爱发电 · koukou021](https://afdian.com/a/koukou021) 赞助支持作者的持续创作！
 
 ---
 
