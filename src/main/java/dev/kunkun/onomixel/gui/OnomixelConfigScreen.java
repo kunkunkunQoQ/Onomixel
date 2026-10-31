@@ -17,6 +17,7 @@ import dev.kunkun.onomixel.subtitle.VisualTypes;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.AbstractSliderButton;
 import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import org.joml.Matrix3x2fStack;
@@ -37,6 +38,7 @@ public final class OnomixelConfigScreen extends Screen {
     private ColorStyle draftColorStyle;
     private AestheticStyle draftAesthetic;
     private ColorblindMode draftColorblind;
+    private boolean draftSpatialWords;
     private boolean draftRadar;
     private boolean draftKinetic;
     private boolean draftSpeedOfSound;
@@ -44,6 +46,14 @@ public final class OnomixelConfigScreen extends Screen {
     private int draftDistance;
     private double draftOpacity;
     private double draftDuration;
+
+    // Zero-allocation cached preview text holders
+    private String cachedRadarText;
+    private int cachedRadarTextW = -1;
+    private String cachedOffLabel;
+    private int cachedOffW = -1;
+    private String cachedWordsOffLabel;
+    private int cachedWordsOffW = -1;
 
     public OnomixelConfigScreen(Screen parent) {
         super(Component.translatable("onomixel.config.screen.title"));
@@ -53,6 +63,7 @@ public final class OnomixelConfigScreen extends Screen {
         this.draftColorStyle = OnomixelConfig.COLOR_STYLE.get();
         this.draftAesthetic = OnomixelConfig.AESTHETIC_STYLE.get();
         this.draftColorblind = OnomixelConfig.COLORBLIND_MODE.get();
+        this.draftSpatialWords = OnomixelConfig.SPATIAL_WORDS.get();
         this.draftRadar = OnomixelConfig.THREAT_RADAR.get();
         this.draftKinetic = OnomixelConfig.KINETIC_TYPOGRAPHY.get();
         this.draftSpeedOfSound = OnomixelConfig.SPEED_OF_SOUND.get();
@@ -84,6 +95,13 @@ public final class OnomixelConfigScreen extends Screen {
 
     @Override
     protected void init() {
+        cachedRadarText = null;
+        cachedRadarTextW = -1;
+        cachedOffLabel = null;
+        cachedOffW = -1;
+        cachedWordsOffLabel = null;
+        cachedWordsOffW = -1;
+
         int leftCol = width / 2 - 155;
         int rightCol = width / 2 + 5;
         int startY = getStartY();
@@ -168,12 +186,22 @@ public final class OnomixelConfigScreen extends Screen {
         ));
 
         addRenderableWidget(Button.builder(
+                getSpatialWordsButtonText(),
+                btn -> {
+                    draftSpatialWords = !draftSpatialWords;
+                    btn.setMessage(getSpatialWordsButtonText());
+                }
+        ).tooltip(Tooltip.create(Component.translatable("onomixel.config.spatialWords.tooltip")))
+        .bounds(rightCol, startY + rowGap * 4, 73, 20).build());
+
+        addRenderableWidget(Button.builder(
                 getRadarButtonText(),
                 btn -> {
                     draftRadar = !draftRadar;
                     btn.setMessage(getRadarButtonText());
                 }
-        ).bounds(rightCol, startY + rowGap * 4, 150, 20).build());
+        ).tooltip(Tooltip.create(Component.translatable("onomixel.config.threatRadar.tooltip")))
+        .bounds(rightCol + 77, startY + rowGap * 4, 73, 20).build());
 
         addRenderableWidget(Button.builder(
                 getKineticButtonText(),
@@ -239,8 +267,14 @@ public final class OnomixelConfigScreen extends Screen {
                 .append(Component.translatable("onomixel.config.colorblind." + draftColorblind.name().toLowerCase(Locale.ROOT)));
     }
 
+    private Component getSpatialWordsButtonText() {
+        return Component.translatable("onomixel.config.screen.spatial_words_btn")
+                .append(": ")
+                .append(draftSpatialWords ? Component.translatable("onomixel.config.screen.on") : Component.translatable("onomixel.config.screen.off"));
+    }
+
     private Component getRadarButtonText() {
-        return Component.translatable("onomixel.config.screen.threat_radar")
+        return Component.translatable("onomixel.config.screen.threat_radar_btn")
                 .append(": ")
                 .append(draftRadar ? Component.translatable("onomixel.config.screen.on") : Component.translatable("onomixel.config.screen.off"));
     }
@@ -263,6 +297,7 @@ public final class OnomixelConfigScreen extends Screen {
         OnomixelConfig.COLOR_STYLE.set(draftColorStyle);
         OnomixelConfig.AESTHETIC_STYLE.set(draftAesthetic);
         OnomixelConfig.COLORBLIND_MODE.set(draftColorblind);
+        OnomixelConfig.SPATIAL_WORDS.set(draftSpatialWords);
         OnomixelConfig.THREAT_RADAR.set(draftRadar);
         OnomixelConfig.KINETIC_TYPOGRAPHY.set(draftKinetic);
         OnomixelConfig.SPEED_OF_SOUND.set(draftSpeedOfSound);
@@ -319,115 +354,138 @@ public final class OnomixelConfigScreen extends Screen {
         int activeColor = activeRules > 0 ? 0xFF38BDF8 : 0xFF94A3B8;
         graphics.text(font, activeText, boxX + boxW - activeTextW - 8, boxY + 3, activeColor, false);
 
-        // Real-time custom word introspection: prioritize attack.crit or sample first active custom rule
-        String previewSound = "minecraft:entity.player.attack.crit";
-        CustomWordRule customRule = SoundCustomizationManager.resolve(previewSound);
-        if (customRule == null && SoundCustomizationManager.activeRuleCount() > 0) {
-            customRule = SoundCustomizationManager.getFirstActiveRule();
-            if (customRule != null && customRule.exactId() != null) {
-                previewSound = customRule.exactId();
-            }
-        }
-
-        // Compute simulated comic text motion at 60 FPS
+        // Compute simulated motion clock at 60 FPS
         double age = (System.currentTimeMillis() % 1600) / 1000.0;
-        VisualType previewVisualType = VisualTypes.CRITICAL_HIT;
-        if (customRule != null && customRule.visualTypeId() != null) {
-            VisualType vt = VisualTypeRegistry.getType(customRule.visualTypeId());
-            if (vt != null) previewVisualType = vt;
-        }
 
-        var styled = CaptionVisuals.sample(previewVisualType, previewSound,
-                age, age, 42, draftColorStyle, draftAesthetic, draftColorblind);
+        // Position central comic text: if threat radar is active in sandbox or words off, offset to left (0.38F) so both fit comfortably
+        float textCenterX = (draftRadar || !draftSpatialWords) ? boxX + (boxW * 0.38F) : boxX + (boxW / 2.0F);
 
-        // Apply custom colors if specified in custom rule
-        int finalColor = styled.rgb();
-        if (customRule != null) {
-            if (draftColorStyle == ColorStyle.PASTEL && customRule.pastelColor() != null) {
-                finalColor = CaptionVisuals.applyColorblindFilter(customRule.pastelColor(), draftColorblind);
-            } else if (customRule.vibrantColor() != null) {
-                finalColor = CaptionVisuals.applyColorblindFilter(customRule.vibrantColor(), draftColorblind);
-            }
-        }
-
-        // Apply kinetic motion envelope if specified
-        if (draftKinetic && customRule != null && customRule.kineticMotion() != null) {
-            String km = customRule.kineticMotion();
-            if ("HITSTOP".equalsIgnoreCase(km)) {
-                long ageNanos = (long) (age * 1_000_000_000L);
-                if (MangaHitstopEffect.isHitstopActive(ageNanos)) {
-                    styled = MangaHitstopEffect.applyHitstopEffect(styled, true);
+        if (draftSpatialWords) {
+            // Real-time custom word introspection: prioritize attack.crit or sample first active custom rule
+            String previewSound = "minecraft:entity.player.attack.crit";
+            CustomWordRule customRule = SoundCustomizationManager.resolve(previewSound);
+            if (customRule == null && SoundCustomizationManager.activeRuleCount() > 0) {
+                customRule = SoundCustomizationManager.getFirstActiveRule();
+                if (customRule != null && customRule.exactId() != null) {
+                    previewSound = customRule.exactId();
                 }
-            } else if ("FLOAT".equalsIgnoreCase(km)) {
-                styled = new CaptionVisuals.Effect(styled.scale(), styled.tiltDegrees(), styled.side(),
-                        styled.rise() - Math.sin(age * Math.PI * 2.0) * 0.15, styled.rgb(), styled.stretchX(), styled.stretchY());
-            } else if ("SHAKE".equalsIgnoreCase(km)) {
-                float shake = (float) (Math.sin(age * 50.0) * 5.0);
-                styled = new CaptionVisuals.Effect(styled.scale(), styled.tiltDegrees() + shake,
-                        styled.side() + shake * 0.04, styled.rise(), styled.rgb(), styled.stretchX(), styled.stretchY());
-            } else if ("POP".equalsIgnoreCase(km) || "STARBURST".equalsIgnoreCase(km)) {
-                float popScale = (float) Math.max(1.0, 1.6 - age * 2.5);
-                styled = new CaptionVisuals.Effect(styled.scale() * popScale, styled.tiltDegrees(),
-                        styled.side(), styled.rise(), styled.rgb(), styled.stretchX() * popScale, styled.stretchY() * popScale);
             }
-        }
 
-        // Resolve sample display text
-        String sampleWord;
-        if (customRule != null && customRule.display() != null) {
-            String resolved = customRule.display().resolve(42L, previewSound);
-            if (customRule.display().isLiteral()) {
-                sampleWord = resolved;
+            VisualType previewVisualType = VisualTypes.CRITICAL_HIT;
+            if (customRule != null && customRule.visualTypeId() != null) {
+                VisualType vt = VisualTypeRegistry.getType(customRule.visualTypeId());
+                if (vt != null) previewVisualType = vt;
+            }
+
+            var styled = CaptionVisuals.sample(previewVisualType, previewSound,
+                    age, age, 42, draftColorStyle, draftAesthetic, draftColorblind);
+
+            // Apply custom colors if specified in custom rule
+            int finalColor = styled.rgb();
+            if (customRule != null) {
+                if (draftColorStyle == ColorStyle.PASTEL && customRule.pastelColor() != null) {
+                    finalColor = CaptionVisuals.applyColorblindFilter(customRule.pastelColor(), draftColorblind);
+                } else if (customRule.vibrantColor() != null) {
+                    finalColor = CaptionVisuals.applyColorblindFilter(customRule.vibrantColor(), draftColorblind);
+                }
+            }
+
+            // Apply kinetic motion envelope if specified
+            if (draftKinetic && customRule != null && customRule.kineticMotion() != null) {
+                String km = customRule.kineticMotion();
+                if ("HITSTOP".equalsIgnoreCase(km)) {
+                    long ageNanos = (long) (age * 1_000_000_000L);
+                    if (MangaHitstopEffect.isHitstopActive(ageNanos)) {
+                        styled = MangaHitstopEffect.applyHitstopEffect(styled, true);
+                    }
+                } else if ("FLOAT".equalsIgnoreCase(km)) {
+                    styled = new CaptionVisuals.Effect(styled.scale(), styled.tiltDegrees(), styled.side(),
+                            styled.rise() - Math.sin(age * Math.PI * 2.0) * 0.15, styled.rgb(), styled.stretchX(), styled.stretchY());
+                } else if ("SHAKE".equalsIgnoreCase(km)) {
+                    float shake = (float) (Math.sin(age * 50.0) * 5.0);
+                    styled = new CaptionVisuals.Effect(styled.scale(), styled.tiltDegrees() + shake,
+                            styled.side() + shake * 0.04, styled.rise(), styled.rgb(), styled.stretchX(), styled.stretchY());
+                } else if ("POP".equalsIgnoreCase(km) || "STARBURST".equalsIgnoreCase(km)) {
+                    float popScale = (float) Math.max(1.0, 1.6 - age * 2.5);
+                    styled = new CaptionVisuals.Effect(styled.scale() * popScale, styled.tiltDegrees(),
+                            styled.side(), styled.rise(), styled.rgb(), styled.stretchX() * popScale, styled.stretchY() * popScale);
+                }
+            }
+
+            // Resolve sample display text
+            String sampleWord;
+            if (customRule != null && customRule.display() != null) {
+                String resolved = customRule.display().resolve(42L, previewSound);
+                if (customRule.display().isLiteral()) {
+                    sampleWord = resolved;
+                } else {
+                    sampleWord = Component.translatable(resolved).getString();
+                }
             } else {
-                sampleWord = Component.translatable(resolved).getString();
+                sampleWord = Component.translatable("onomixel.config.screen.sandbox_sample").getString();
             }
+
+            if (draftAesthetic == AestheticStyle.MEDIEVAL) {
+                sampleWord = "✦ " + sampleWord + " ✦";
+            }
+            int sampleWidth = font.width(sampleWord);
+
+            int alpha = (int) Math.round(draftOpacity * 255);
+            int finalRgbWithAlpha = (alpha << 24) | (finalColor & 0x00FFFFFF);
+
+            float scaleMultiplier = (customRule != null && customRule.scaleMultiplier() != null) ? customRule.scaleMultiplier() : 1.0F;
+
+            Matrix3x2fStack pose = graphics.pose();
+            pose.pushMatrix();
+            pose.translate(textCenterX, boxY + (boxH * 0.62F));
+            pose.rotate((float) Math.toRadians(styled.tiltDegrees()));
+            float s = (float) (styled.scale() * draftScale * 0.9F * scaleMultiplier);
+            pose.scale(s * styled.stretchX(), s * styled.stretchY());
+            graphics.text(font, sampleWord, -sampleWidth / 2, -4, finalRgbWithAlpha, true);
+            pose.popMatrix();
         } else {
-            sampleWord = Component.translatable("onomixel.config.screen.sandbox_sample").getString();
+            // Standby indicator when spatial words are turned off (Zero-allocation cached label)
+            if (cachedWordsOffLabel == null) {
+                cachedWordsOffLabel = Component.translatable("onomixel.config.screen.words_off_standby").getString();
+                cachedWordsOffW = font.width(cachedWordsOffLabel);
+            }
+            int offX = (int) (textCenterX - cachedWordsOffW / 2.0F);
+            int offY = boxY + (int) (boxH * 0.62F) - 4;
+            graphics.text(font, cachedWordsOffLabel, offX, offY, 0x4494A3B8, false);
         }
-
-        if (draftAesthetic == AestheticStyle.MEDIEVAL) {
-            sampleWord = "✦ " + sampleWord + " ✦";
-        }
-        int sampleWidth = font.width(sampleWord);
-
-        int alpha = (int) Math.round(draftOpacity * 255);
-        int finalRgbWithAlpha = (alpha << 24) | (finalColor & 0x00FFFFFF);
-
-        float scaleMultiplier = (customRule != null && customRule.scaleMultiplier() != null) ? customRule.scaleMultiplier() : 1.0F;
-
-        // Position central comic text: if threat radar is active in sandbox, gently offset to left (0.38F) so both fit comfortably
-        float textCenterX = draftRadar ? boxX + (boxW * 0.38F) : boxX + (boxW / 2.0F);
-
-        Matrix3x2fStack pose = graphics.pose();
-        pose.pushMatrix();
-        pose.translate(textCenterX, boxY + (boxH * 0.62F));
-        pose.rotate((float) Math.toRadians(styled.tiltDegrees()));
-        float s = (float) (styled.scale() * draftScale * 0.9F * scaleMultiplier);
-        pose.scale(s * styled.stretchX(), s * styled.stretchY());
-        graphics.text(font, sampleWord, -sampleWidth / 2, -4, finalRgbWithAlpha, true);
-        pose.popMatrix();
 
         // Real-time Tactical Radar Capsule Preview inside the sandbox
         if (draftRadar) {
-            String threatKey = ThreatRegistry.resolveThreatNameKey("minecraft:entity.creeper.primed");
-            String threatName = Component.translatable(threatKey).getString();
-            String radarText = "⚠ " + threatName + " 3.2m";
-            int radarTextW = font.width(radarText);
+            if (cachedRadarText == null) {
+                String threatKey = ThreatRegistry.resolveThreatNameKey("minecraft:entity.creeper.primed");
+                String threatName = Component.translatable(threatKey).getString();
+                cachedRadarText = "⚠ " + threatName + " 3.2m";
+                cachedRadarTextW = font.width(cachedRadarText);
+            }
+            String radarText = cachedRadarText;
+            int radarTextW = cachedRadarTextW;
             int badgeHalfW = radarTextW / 2 + 5;
             int badgeHalfH = 7;
 
             int badgeCenterX = boxX + boxW - badgeHalfW - 16;
             int badgeCenterY = boxY + (int) (boxH * 0.62F);
 
-            // 4Hz tactical pulse: sin(age * 4 * 2 * PI) = sin(age * 8 * PI)
-            float pulse = (float) (0.65 + 0.35 * Math.sin(age * 8.0 * Math.PI));
+            // 4Hz tactical pulse: sin(age * 4 * 2 * PI) = sin(age * 8 * PI), synchronized with ThreatRadarCalculator [0.50, 1.00]
+            float pulse = (float) (0.75 + 0.25 * Math.sin(age * 8.0 * Math.PI));
             int baseBorderRgb = CaptionVisuals.applyColorblindFilter(0xEF4444, draftColorblind);
 
-            float effectiveAlpha = (float) Math.clamp(draftOpacity, 0.2, 1.0);
+            // Independent threat radar lifecycle for creeper primed: 1500ms (1.5s)
+            // age in [0.0, 1.6s]: active for 1.5s, smooth fadeout from 1.3s to 1.5s
+            float lifecycleAlpha = 1.0F;
+            if (age > 1.3) {
+                lifecycleAlpha = (float) Math.clamp((1.5 - age) / 0.2, 0.0, 1.0);
+            }
+
+            float effectiveAlpha = (float) Math.clamp(draftOpacity, 0.2, 1.0) * lifecycleAlpha;
             int borderAlpha = (int) (pulse * 255 * effectiveAlpha);
             int borderColor = (borderAlpha << 24) | (baseBorderRgb & 0xFFFFFF);
 
-            int bgAlpha = (int) (0xDD * effectiveAlpha);
+            int bgAlpha = (int) (0xEE * effectiveAlpha);
             int bgColor = (bgAlpha << 24) | 0x090D16;
 
             int textAlpha = (int) (255 * effectiveAlpha);
@@ -447,18 +505,21 @@ public final class OnomixelConfigScreen extends Screen {
             graphics.fill(badgeCenterX + badgeHalfW - 1, badgeCenterY - badgeHalfH,
                     badgeCenterX + badgeHalfW, badgeCenterY + badgeHalfH, borderColor);
 
-            // 3. Directional pointer chevron pointing right
-            graphics.text(font, "▶", badgeCenterX + badgeHalfW + 3, badgeCenterY - 4, borderColor, true);
+            // 3. Directional pointer chevron pointing right with 0.8px micro-motion
+            int chevronOffset = (int) (Math.sin(age * 8.0 * Math.PI) * 0.8F);
+            graphics.text(font, "▶", badgeCenterX + badgeHalfW + 3 + chevronOffset, badgeCenterY - 4, borderColor, true);
 
             // 4. Localized text label
             graphics.text(font, radarText, badgeCenterX - radarTextW / 2, badgeCenterY - 4, textColor, true);
         } else {
             // Standby indicator when radar is turned off
-            String offLabel = Component.translatable("onomixel.config.screen.radar_off_standby").getString();
-            int offW = font.width(offLabel);
-            int offX = boxX + boxW - offW - 12;
+            if (cachedOffLabel == null) {
+                cachedOffLabel = Component.translatable("onomixel.config.screen.radar_off_standby").getString();
+                cachedOffW = font.width(cachedOffLabel);
+            }
+            int offX = boxX + boxW - cachedOffW - 12;
             int offY = boxY + (int) (boxH * 0.62F) - 4;
-            graphics.text(font, offLabel, offX, offY, 0x4494A3B8, false);
+            graphics.text(font, cachedOffLabel, offX, offY, 0x4494A3B8, false);
         }
     }
 

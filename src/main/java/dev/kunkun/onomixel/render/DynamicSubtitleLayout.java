@@ -215,8 +215,12 @@ public final class DynamicSubtitleLayout {
             double below = Math.max(0.12, pivot.y() - source.body.minY) + reserve.halfHeight * reservedScale + 0.16 + envelope.maxRise();
             double push = block ? (useContact ? 0.16 : extent(source.body, toward) + 0.12) : 0.14;
             push = Math.min(push, Math.max(0, distance - 0.70));
+            double horizontal = extent(source.body, right) + reserve.halfWidth * reservedScale + 0.17 + envelope.maxSide();
+            if (selfHurt) {
+                horizontal = Math.max(horizontal, 0.68);
+            }
             List<Point> points = CaptionPlacement.aroundSource(pivot, toward, right, up, push,
-                    extent(source.body, right) + reserve.halfWidth * reservedScale + 0.17 + envelope.maxSide(), above, below,
+                    horizontal, above, below,
                     (event.id() & 1) == 0 ? 1 : -1);
             List<BillboardProjection.Bounds> silhouettes = new ArrayList<>();
             for (AABB part : source.parts) {
@@ -265,14 +269,21 @@ public final class DynamicSubtitleLayout {
             java.util.Arrays.fill(scores, Double.POSITIVE_INFINITY);
             int best = -1;
             double bestScore = Double.POSITIVE_INFINITY;
+            boolean selfHurt = isSelfHurt(job.event.soundId(), Math.sqrt(job.pivot.distanceSquared(eyePoint)));
             for (int slot = 0; slot < job.points.size(); slot++) {
                 Point candidate = job.points.get(slot);
                 if (!CaptionReadability.fullyOnScreen(job.slotBounds.get(slot))) continue;
                 double score = CaptionReadability.score(job.slotBounds.get(slot), models, others, viewport,
                         candidate.distanceSquared(job.pivot));
                 var sb = job.slotBounds.get(slot);
-                if (crosshairZone.zoneOf((sb.minX() + sb.maxX()) * 0.5, (sb.minY() + sb.maxY()) * 0.5) == CrosshairComfortZone.Zone.CORE) {
-                    score += 80.0;
+                var zone = crosshairZone.zoneOf(sb);
+                if (zone == CrosshairComfortZone.Zone.CORE) {
+                    if (selfHurt) {
+                        continue;
+                    }
+                    score += 150.0;
+                } else if (zone == CrosshairComfortZone.Zone.BUFFER) {
+                    score += selfHurt ? 80.0 : 25.0;
                 }
                 if (weaponMask.intersects(sb)) {
                     score += 60.0;

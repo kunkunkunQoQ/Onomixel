@@ -180,6 +180,41 @@ public final class CrosshairComfortZone {
         return Zone.CORE;
     }
 
+    /**
+     * Evaluates the proximity of an entire billboard bounding box to the crosshair comfort zone,
+     * using exact point-to-AABB clamped Euclidean distance.
+     * Zero-allocation (Zero-GC) method suitable for the per-frame render loop.
+     *
+     * @param bounds billboard bounding box in NDC coordinates (-1.0 to 1.0)
+     * @return CORE if any part of the box intersects the core exclusion zone;
+     *         BUFFER if the box intersects the buffer ring but not the core;
+     *         OUTSIDE if the entire box remains strictly outside the outer boundary.
+     */
+    public Zone zoneOf(BillboardProjection.Bounds bounds) {
+        if (bounds == null || !Float.isFinite(bounds.minX()) || !Float.isFinite(bounds.maxX())
+                || !Float.isFinite(bounds.minY()) || !Float.isFinite(bounds.maxY())) {
+            return Zone.OUTSIDE;
+        }
+        float minX = Math.min(bounds.minX(), bounds.maxX());
+        float maxX = Math.max(bounds.minX(), bounds.maxX());
+        float minY = Math.min(bounds.minY(), bounds.maxY());
+        float maxY = Math.max(bounds.minY(), bounds.maxY());
+
+        double clampX = Math.clamp(center.x(), minX, maxX);
+        double clampY = Math.clamp(center.y(), minY, maxY);
+        double dx = center.x() - clampX;
+        double dy = center.y() - clampY;
+        double distSq = dx * dx + dy * dy;
+
+        if (distSq < innerRadius * innerRadius) {
+            return Zone.CORE;
+        }
+        if (distSq < outerRadius * outerRadius) {
+            return Zone.BUFFER;
+        }
+        return Zone.OUTSIDE;
+    }
+
     public RepulsionResult evaluate(double x, double y) {
         if (!Double.isFinite(x) || !Double.isFinite(y)) {
             return new RepulsionResult(Vector2.ZERO, outerRadius, Zone.OUTSIDE);
@@ -261,13 +296,43 @@ public final class CrosshairComfortZone {
     }
 
     public Vector2 calculateDisplacement(BillboardProjection.Bounds bounds) {
-        if (bounds == null) return Vector2.ZERO;
-        float centerX = (bounds.minX() + bounds.maxX()) * 0.5f;
-        float centerY = (bounds.minY() + bounds.maxY()) * 0.5f;
-        if (!Float.isFinite(centerX) || !Float.isFinite(centerY)) {
+        if (bounds == null || !Float.isFinite(bounds.minX()) || !Float.isFinite(bounds.maxX())
+                || !Float.isFinite(bounds.minY()) || !Float.isFinite(bounds.maxY())) {
             return Vector2.ZERO;
         }
-        return calculateDisplacement(centerX, centerY);
+        float minX = Math.min(bounds.minX(), bounds.maxX());
+        float maxX = Math.max(bounds.minX(), bounds.maxX());
+        float minY = Math.min(bounds.minY(), bounds.maxY());
+        float maxY = Math.max(bounds.minY(), bounds.maxY());
+
+        double clampX = Math.clamp(center.x(), minX, maxX);
+        double clampY = Math.clamp(center.y(), minY, maxY);
+        double dx = clampX - center.x();
+        double dy = clampY - center.y();
+        double distSq = dx * dx + dy * dy;
+        double r = Math.sqrt(distSq);
+
+        if (r >= outerRadius) {
+            return Vector2.ZERO;
+        }
+        if (r < 1e-9) {
+            // Center is inside the AABB
+            float cx = (minX + maxX) * 0.5f;
+            float cy = (minY + maxY) * 0.5f;
+            double bcx = cx - center.x();
+            double bcy = cy - center.y();
+            double bLen = Math.sqrt(bcx * bcx + bcy * bcy);
+            Vector2 dir = bLen < 1e-9 ? singularityDirection : new Vector2(bcx / bLen, bcy / bLen);
+            double deltaR = innerRadius + repelStrength;
+            return dir.multiply(deltaR);
+        }
+        Vector2 rHat = new Vector2(dx / r, dy / r);
+        if (r >= innerRadius) {
+            double factor = (outerRadius - r) / (outerRadius - innerRadius);
+            return rHat.multiply(repelStrength * factor);
+        }
+        double deltaR = (innerRadius - r) + repelStrength;
+        return rHat.multiply(deltaR);
     }
 
     public BillboardProjection.Bounds displace(BillboardProjection.Bounds bounds) {

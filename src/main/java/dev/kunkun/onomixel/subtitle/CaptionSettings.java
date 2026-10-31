@@ -6,14 +6,31 @@ import dev.kunkun.onomixel.sound.SoundSemantics;
 public record CaptionSettings(boolean enabled, DisplayMode mode, ColorStyle style, int maxDistance,
                               int maxVisible, long durationNanos, double textScale, double opacity,
                               boolean distanceScaling, boolean fade, Durations durations,
-                              boolean threatRadar, boolean altitudeBadges, boolean kineticTypography,
-                              boolean speedOfSound, AestheticStyle aestheticStyle, ColorblindMode colorblindMode) {
+                              boolean spatialWords, boolean threatRadar, boolean altitudeBadges,
+                              boolean kineticTypography, boolean speedOfSound,
+                              AestheticStyle aestheticStyle, ColorblindMode colorblindMode) {
 
+    /**
+     * 17-parameter backward-compatible constructor (defaults spatialWords = true).
+     */
+    public CaptionSettings(boolean enabled, DisplayMode mode, ColorStyle style, int maxDistance,
+                           int maxVisible, long durationNanos, double textScale, double opacity,
+                           boolean distanceScaling, boolean fade, Durations durations,
+                           boolean threatRadar, boolean altitudeBadges, boolean kineticTypography,
+                           boolean speedOfSound, AestheticStyle aestheticStyle, ColorblindMode colorblindMode) {
+        this(enabled, mode, style, maxDistance, maxVisible, durationNanos, textScale, opacity,
+                distanceScaling, fade, durations, true, threatRadar, altitudeBadges, kineticTypography,
+                speedOfSound, aestheticStyle, colorblindMode);
+    }
+
+    /**
+     * 11-parameter backward-compatible constructor (for tests and quick instantiation).
+     */
     public CaptionSettings(boolean enabled, DisplayMode mode, ColorStyle style, int maxDistance,
                            int maxVisible, long durationNanos, double textScale, double opacity,
                            boolean distanceScaling, boolean fade, Durations durations) {
         this(enabled, mode, style, maxDistance, maxVisible, durationNanos, textScale, opacity,
-                distanceScaling, fade, durations, true, true, true, true, AestheticStyle.SHONEN, ColorblindMode.OFF);
+                distanceScaling, fade, durations, true, true, true, true, true, AestheticStyle.SHONEN, ColorblindMode.OFF);
     }
 
     public record Durations(double step, double pickup, double interaction, double breaking,
@@ -35,7 +52,7 @@ public record CaptionSettings(boolean enabled, DisplayMode mode, ColorStyle styl
         return new CaptionSettings(true, DisplayMode.LIGHTWEIGHT, ColorStyle.VIBRANT, 24, 12,
                 1_000_000_000L, 1, 0.9, true, true,
                 new Durations(0.5, 0.7, 0.9, 1, 1.1, 0.85, 0.8),
-                true, true, true, true, AestheticStyle.SHONEN, ColorblindMode.OFF);
+                true, true, true, true, true, AestheticStyle.SHONEN, ColorblindMode.OFF);
     }
 
     public long duration(SoundSemantics semantics) {

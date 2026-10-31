@@ -41,7 +41,7 @@ public final class WorldSubtitleRenderer {
         Minecraft minecraft = Minecraft.getInstance();
         long now = capture.pump(minecraft);
         var settings = capture.settings();
-        if (!settings.enabled() || minecraft.level != event.getLevel()) {
+        if (!settings.enabled() || !settings.spatialWords() || minecraft.level != event.getLevel()) {
             dynamicLayout.clear();
             event.getRenderState().setRenderData(FRAME, List.of());
             return;

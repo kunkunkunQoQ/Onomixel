@@ -31,6 +31,8 @@ public final class OnomixelConfig {
             .translation("onomixel.config.fade").define("fade", true);
 
     // Advanced Tactical, Manga Dynamics, and Universal Immersion
+    public static final ModConfigSpec.BooleanValue SPATIAL_WORDS = BUILDER
+            .translation("onomixel.config.spatialWords").define("spatialWords", true);
     public static final ModConfigSpec.BooleanValue THREAT_RADAR = BUILDER
             .translation("onomixel.config.threatRadar").define("threatRadar", true);
     public static final ModConfigSpec.BooleanValue ALTITUDE_BADGES = BUILDER
@@ -72,8 +74,22 @@ public final class OnomixelConfig {
                 new CaptionSettings.Durations(STEP_DURATION_SCALE.get(), PICKUP_DURATION_SCALE.get(),
                         INTERACTION_DURATION_SCALE.get(), BREAK_DURATION_SCALE.get(), IMPACT_DURATION_SCALE.get(),
                         VOICE_DURATION_SCALE.get(), AMBIENT_DURATION_SCALE.get()),
-                THREAT_RADAR.get(), ALTITUDE_BADGES.get(), KINETIC_TYPOGRAPHY.get(), SPEED_OF_SOUND.get(),
+                SPATIAL_WORDS.get(), THREAT_RADAR.get(), ALTITUDE_BADGES.get(), KINETIC_TYPOGRAPHY.get(), SPEED_OF_SOUND.get(),
                 AESTHETIC_STYLE.get(), COLORBLIND_MODE.get());
+    }
+
+    public static boolean spatialWords() {
+        if (SPEC != null && SPEC.isLoaded()) {
+            return SPATIAL_WORDS.get();
+        }
+        return true;
+    }
+
+    public static boolean threatRadar() {
+        if (SPEC != null && SPEC.isLoaded()) {
+            return THREAT_RADAR.get();
+        }
+        return true;
     }
 
     public static ColorStyle colorStyle() {

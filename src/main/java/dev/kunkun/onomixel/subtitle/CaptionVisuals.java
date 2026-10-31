@@ -58,9 +58,9 @@ public final class CaptionVisuals {
         return nearDistanceFactor(distance, false);
     }
 
-    /** Exempts self-damage from angular downscaling, granting full combat impact. */
+    /** Exempts self-damage from angular downscaling, granting full combat impact without visual occlusion. */
     public static double nearDistanceFactor(double distance, boolean selfHurt) {
-        if (selfHurt) return 1.25;
+        if (selfHurt) return 1.10;
         return Math.clamp(distance / 3.0, 0.0, 1.0);
     }
 

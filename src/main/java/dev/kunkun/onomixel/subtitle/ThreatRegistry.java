@@ -73,6 +73,75 @@ public final class ThreatRegistry {
         return ThreatLevel.NONE;
     }
 
+    /**
+     * Discrete radar countdown lifetimes decoupled from 3D visual subtitle rendering.
+     * Keeps urgent tactical threats visible on the radar perimeter for appropriate reaction windows.
+     */
+    public static long radarDurationNanos(String soundId) {
+        return radarDurationNanos(soundId, 800_000_000L);
+    }
+
+    public static long radarDurationNanos(String soundId, long fallbackNanos) {
+        if (soundId == null || soundId.isEmpty()) return 0L;
+        String id = soundId.toLowerCase(Locale.ROOT);
+
+        // Cat 3: 持续引信/倒计时
+        if (id.contains("tnt.primed")) return 3_000_000_000L; // 3000ms
+        if (id.contains("creeper.primed")) return 1_500_000_000L; // 1500ms (30 ticks)
+        if (id.contains("ghast.warn") || id.contains("evoker.prepare_attack")) return 1_200_000_000L; // 1200ms
+        if (id.contains("breeze.charge")) return 1_000_000_000L; // 1000ms
+
+        // Cat 6: Boss 史诗级
+        if (id.contains("wither.spawn") || id.contains("warden.emerge")) return 2_000_000_000L; // 2000ms
+        if (id.contains("warden.roar") || id.contains("ender_dragon.growl")) return 1_500_000_000L; // 1500ms
+
+        // Cat 4: 爆发破坏
+        if (id.contains("warden.sonic_boom")) return 800_000_000L; // 800ms
+        if (id.contains("generic.explode") || id.contains("lightning_bolt.thunder")) return 750_000_000L; // 750ms
+
+        // Cat 5: 近战追踪
+        if (id.contains("raid.horn") || id.contains("bell.use") || id.contains("bell.resonate")) return 1_200_000_000L; // 1200ms
+        if (id.contains("phantom.swoop")
+                || id.contains("guardian.attack")
+                || id.contains("elder_guardian.curse")
+                || id.contains("enderman.scream")
+                || id.contains("enderman.stare")) return 900_000_000L; // 900ms
+        if (id.contains("ravager.roar") || id.contains("ravager.attack")) return 850_000_000L; // 850ms
+        if (id.contains("piglin_brute.angry")
+                || id.contains("warden.heartbeat")
+                || id.contains("warden.sniff")) return 800_000_000L; // 800ms
+        if (id.contains("phantom.bite")) return 700_000_000L; // 700ms
+
+        // Cat 2: 远程发射/狙击 (700ms)
+        if (id.contains("skeleton.shoot")
+                || id.contains("stray.shoot")
+                || id.contains("bogged.shoot")
+                || id.contains("arrow.shoot")
+                || id.contains("crossbow.shoot")
+                || id.contains("pillager.shoot")
+                || id.contains("drowned.shoot")
+                || id.contains("trident.throw")
+                || id.contains("blaze.shoot")
+                || id.contains("breeze.shoot")
+                || id.contains("witch.throw")
+                || id.contains("ghast.shoot")
+                || id.contains("wither.shoot")) return 700_000_000L; // 700ms
+
+        // Cat 1: 瞬态落点 (450ms)
+        if ((id.contains("arrow.hit") && !id.contains("hit_player"))
+                || id.contains("trident.hit")
+                || id.contains("shulker_bullet.hit")
+                || id.contains("lightning_bolt.impact")
+                || id.contains("evoker_fangs.attack")) return 450_000_000L; // 450ms
+
+        ThreatLevel level = evaluate(soundId);
+        if (level == ThreatLevel.CRITICAL || level == ThreatLevel.ELEVATED) {
+            return fallbackNanos > 0 ? fallbackNanos : 800_000_000L;
+        }
+
+        return 0L;
+    }
+
     public static boolean isEligibleForRadar(String soundId, double distance) {
         double maxDistance = maxRadarDistance(evaluate(soundId));
         return maxDistance > 0.0 && distance <= maxDistance;

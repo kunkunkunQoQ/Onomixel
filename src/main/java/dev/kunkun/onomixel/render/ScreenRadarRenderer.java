@@ -34,29 +34,76 @@ import java.util.Locale;
 public final class ScreenRadarRenderer {
     private final ClientSoundCapture capture;
 
-    public ScreenRadarRenderer(ClientSoundCapture capture) {
-        this.capture = capture;
+    // Zero-allocation pre-allocated scratch pools for 60-144 FPS rendering
+    private static final int MAX_CANDIDATES = 16;
+    private static final int MAX_DISPLAYED = 4;
+
+    private static final class CandidateSlot {
+        String soundId;
+        double soundX, soundY, soundZ;
+        boolean isCritical;
+        double distance;
+        double maxDistance;
+
+        void set(String soundId, double soundX, double soundY, double soundZ,
+                 boolean isCritical, double distance, double maxDistance) {
+            this.soundId = soundId;
+            this.soundX = soundX;
+            this.soundY = soundY;
+            this.soundZ = soundZ;
+            this.isCritical = isCritical;
+            this.distance = distance;
+            this.maxDistance = maxDistance;
+        }
     }
 
-    private record PreparedRadarItem(
-            String soundId,
-            double soundX,
-            double soundY,
-            double soundZ,
-            boolean isCritical,
-            double distance,
-            double maxDistance
-    ) {}
+    private final CandidateSlot[] candidatePool = new CandidateSlot[MAX_CANDIDATES];
+    private final CandidateSlot[] selectedCandidates = new CandidateSlot[MAX_DISPLAYED];
+    private final String[] displayTexts = new String[MAX_DISPLAYED];
+    private final int[] textWidths = new int[MAX_DISPLAYED];
+    private final int[] halfWidths = new int[MAX_DISPLAYED];
+    private final int[] halfHeights = new int[MAX_DISPLAYED];
+    private final ThreatRadarCalculator.EdgeTarget[] targets = new ThreatRadarCalculator.EdgeTarget[MAX_DISPLAYED];
 
-    private record SolvedBadge(
-            PreparedRadarItem candidate,
-            String displayText,
-            int textWidth,
-            int halfWidth,
-            int halfHeight,
-            ThreatRadarCalculator.EdgeTarget target,
-            ScreenRadarLayout.PlannedBadge planned
-    ) {}
+    // Reusable list to interface with ScreenRadarLayout without per-frame ArrayList allocations
+    private final List<ScreenRadarLayout.InputCandidate> reusableLayoutInputs = new ArrayList<>(MAX_DISPLAYED);
+
+    public ScreenRadarRenderer(ClientSoundCapture capture) {
+        this.capture = capture;
+        for (int i = 0; i < MAX_CANDIDATES; i++) {
+            this.candidatePool[i] = new CandidateSlot();
+        }
+        for (int i = 0; i < MAX_DISPLAYED; i++) {
+            this.selectedCandidates[i] = new CandidateSlot();
+        }
+    }
+
+    private static String formatDistance(double dist) {
+        int tenths = (int) Math.round(dist * 10.0);
+        int whole = tenths / 10;
+        int frac = Math.abs(tenths % 10);
+        return whole + "." + frac + "m";
+    }
+
+    private static int compareCandidates(CandidateSlot a, CandidateSlot b) {
+        if (a.isCritical != b.isCritical) {
+            return a.isCritical ? -1 : 1; // Critical threats first
+        }
+        return Double.compare(a.distance, b.distance); // Closer threats first
+    }
+
+    private static void sortCandidates(CandidateSlot[] pool, int count) {
+        // Fast in-place insertion sort (count <= 16): zero lambda, comparator, or iterator allocation
+        for (int i = 1; i < count; i++) {
+            CandidateSlot key = pool[i];
+            int j = i - 1;
+            while (j >= 0 && compareCandidates(pool[j], key) > 0) {
+                pool[j + 1] = pool[j];
+                j--;
+            }
+            pool[j + 1] = key;
+        }
+    }
 
     @SubscribeEvent
     public void onRenderGui(RenderGuiEvent.Post event) {
@@ -84,10 +131,14 @@ public final class ScreenRadarRenderer {
         double projectionAspect = mc.getWindow().getHeight() > 0
                 ? (double) mc.getWindow().getWidth() / mc.getWindow().getHeight() : 1.0;
 
-        List<PreparedRadarItem> preparedList = new ArrayList<>(4);
+        int candidateCount = 0;
 
         for (SubtitlePool.Subtitle eventItem : pool.snapshot()) {
-            if (activeNow > 0 && activeNow >= eventItem.expiresNanos()) continue;
+            long radarExpires = eventItem.radarExpiresNanos();
+            if (radarExpires <= 0) {
+                radarExpires = eventItem.triggeredNanos() + ThreatRegistry.radarDurationNanos(eventItem.soundId());
+            }
+            if (activeNow > 0 && activeNow >= radarExpires) continue;
             if (eventItem.localPlayerShot()) continue;
 
             String soundId = eventItem.soundId();
@@ -110,48 +161,43 @@ public final class ScreenRadarRenderer {
             double dist = Math.sqrt(distSq);
             boolean isCritical = level == ThreatRegistry.ThreatLevel.CRITICAL;
 
-            // Performance Optimization 3: Pure math frustum check before string formatting
-            ThreatRadarCalculator.EdgeTarget target = ThreatRadarCalculator.calculate(
+            // Performance Optimization 3: Pure zero-allocation frustum cone check before string formatting
+            boolean isOffScreen = ThreatRadarCalculator.isOffScreen(
                     camPos.x, camPos.y, camPos.z,
                     look.x, look.y, look.z,
                     up.x, up.y, up.z,
                     eventItem.x(), eventItem.y(), eventItem.z(),
-                    screenWidth, screenHeight,
-                    40, 7,
-                    wallNow,
-                    isCritical,
                     camera.getFov(),
                     projectionAspect
             );
 
             // If threat is currently visible inside the player's 3D screen view, don't draw 2D radar badge
-            if (!target.isOffScreen()) continue;
+            if (!isOffScreen) continue;
 
-            preparedList.add(new PreparedRadarItem(soundId, eventItem.x(), eventItem.y(), eventItem.z(),
-                    isCritical, dist, maxDist));
+            if (candidateCount < MAX_CANDIDATES) {
+                candidatePool[candidateCount++].set(soundId, eventItem.x(), eventItem.y(), eventItem.z(),
+                        isCritical, dist, maxDist);
+            }
         }
 
-        if (preparedList.isEmpty()) return;
+        if (candidateCount == 0) return;
 
-        // Prioritize: critical first, then closest distance
-        preparedList.sort(Comparator.comparing((PreparedRadarItem item) -> !item.isCritical)
-                .thenComparingDouble(PreparedRadarItem::distance));
+        // Prioritize in-place: critical first, then closest distance
+        sortCandidates(candidatePool, candidateCount);
 
-        // Select the four highest-priority off-screen candidates
-        int count = Math.min(4, preparedList.size());
-        List<ScreenRadarLayout.InputCandidate> layoutInputs = new ArrayList<>(count);
-        List<PreparedRadarItem> selectedCandidates = new ArrayList<>(count);
-        List<String> displayTexts = new ArrayList<>(count);
-        List<Integer> textWidths = new ArrayList<>(count);
-        List<Integer> halfWidths = new ArrayList<>(count);
-        List<Integer> halfHeights = new ArrayList<>(count);
-        List<ThreatRadarCalculator.EdgeTarget> targets = new ArrayList<>(count);
+        // Select up to MAX_DISPLAYED highest-priority off-screen candidates
+        int count = Math.min(MAX_DISPLAYED, candidateCount);
+        reusableLayoutInputs.clear();
 
         for (int i = 0; i < count; i++) {
-            PreparedRadarItem candidate = preparedList.get(i);
-            String distStr = String.format(Locale.ROOT, "%.1fm", candidate.distance());
-            String threatName = Component.translatable(ThreatRegistry.resolveThreatNameKey(candidate.soundId())).getString();
-            String displayText = (candidate.isCritical() ? "⚠ " : "◆ ") + threatName + " " + distStr;
+            CandidateSlot candidate = candidatePool[i];
+            CandidateSlot targetSlot = selectedCandidates[i];
+            targetSlot.set(candidate.soundId, candidate.soundX, candidate.soundY, candidate.soundZ,
+                    candidate.isCritical, candidate.distance, candidate.maxDistance);
+
+            String distStr = formatDistance(candidate.distance);
+            String threatName = Component.translatable(ThreatRegistry.resolveThreatNameKey(candidate.soundId)).getString();
+            String displayText = (candidate.isCritical ? "⚠ " : "◆ ") + threatName + " " + distStr;
             int textWidth = font.width(displayText);
             int halfWidth = textWidth / 2 + 8;
             int halfHeight = 7;
@@ -159,43 +205,45 @@ public final class ScreenRadarRenderer {
                     camPos.x, camPos.y, camPos.z,
                     look.x, look.y, look.z,
                     up.x, up.y, up.z,
-                    candidate.soundX(), candidate.soundY(), candidate.soundZ(),
+                    candidate.soundX, candidate.soundY, candidate.soundZ,
                     screenWidth, screenHeight,
                     halfWidth, halfHeight,
                     wallNow,
-                    candidate.isCritical(),
+                    candidate.isCritical,
                     camera.getFov(),
                     projectionAspect
             );
 
-            selectedCandidates.add(candidate);
-            displayTexts.add(displayText);
-            textWidths.add(textWidth);
-            halfWidths.add(halfWidth);
-            halfHeights.add(halfHeight);
-            targets.add(target);
+            displayTexts[i] = displayText;
+            textWidths[i] = textWidth;
+            halfWidths[i] = halfWidth;
+            halfHeights[i] = halfHeight;
+            targets[i] = target;
 
-            layoutInputs.add(new ScreenRadarLayout.InputCandidate(
-                    target, halfWidth, halfHeight, candidate.distance(), candidate.maxDistance()
+            reusableLayoutInputs.add(new ScreenRadarLayout.InputCandidate(
+                    target, halfWidth, halfHeight, candidate.distance, candidate.maxDistance
             ));
         }
 
         // Compute multi-edge dynamic flow positions and proximity alphas
-        List<ScreenRadarLayout.PlannedBadge> plannedBadges = ScreenRadarLayout.layout(layoutInputs, screenWidth, screenHeight);
+        List<ScreenRadarLayout.PlannedBadge> plannedBadges = ScreenRadarLayout.layout(reusableLayoutInputs, screenWidth, screenHeight);
+
+        float opacityMultiplier = (float) Math.clamp(settings.opacity(), 0.1, 1.0);
+        var colorblindMode = settings.colorblindMode();
 
         for (int i = 0; i < plannedBadges.size(); i++) {
             ScreenRadarLayout.PlannedBadge planned = plannedBadges.get(i);
-            PreparedRadarItem candidate = selectedCandidates.get(i);
-            String displayText = displayTexts.get(i);
-            int textWidth = textWidths.get(i);
-            int halfWidth = halfWidths.get(i);
-            int halfHeight = halfHeights.get(i);
-            ThreatRadarCalculator.EdgeTarget target = targets.get(i);
+            CandidateSlot candidate = selectedCandidates[i];
+            String displayText = displayTexts[i];
+            int textWidth = textWidths[i];
+            int halfWidth = halfWidths[i];
+            int halfHeight = halfHeights[i];
+            ThreatRadarCalculator.EdgeTarget target = targets[i];
 
             try {
                 renderThreatBadge(extractor, font, displayText, textWidth, halfWidth, halfHeight,
-                        candidate.isCritical(), target, planned.renderX(), planned.renderY(),
-                        planned.proximityAlpha());
+                        candidate.isCritical, target, planned.renderX(), planned.renderY(),
+                        planned.proximityAlpha(), opacityMultiplier, colorblindMode);
             } catch (Exception ignored) {
                 // Safeguard GUI rendering.
             }
@@ -206,7 +254,9 @@ public final class ScreenRadarRenderer {
                                    int halfWidth, int halfHeight, boolean isCritical,
                                    ThreatRadarCalculator.EdgeTarget target,
                                    float renderX, float renderY,
-                                   float proximityAlpha) {
+                                   float proximityAlpha,
+                                   float opacityMultiplier,
+                                   dev.kunkun.onomixel.subtitle.ColorblindMode colorblindMode) {
         Matrix3x2fStack pose = extractor.pose();
         pose.pushMatrix();
         pose.translate(renderX, renderY);
@@ -214,20 +264,20 @@ public final class ScreenRadarRenderer {
         int halfW = halfWidth;
         int halfH = halfHeight;
 
-        // Proximity Alpha: Closer threats become increasingly opaque and prominent
-        float effectiveAlpha = Math.clamp(proximityAlpha, ScreenRadarLayout.MIN_PROXIMITY_ALPHA, ScreenRadarLayout.MAX_PROXIMITY_ALPHA);
+        // Proximity Alpha combined with user Opacity slider setting
+        float effectiveAlpha = Math.clamp(proximityAlpha, ScreenRadarLayout.MIN_PROXIMITY_ALPHA, ScreenRadarLayout.MAX_PROXIMITY_ALPHA) * opacityMultiplier;
 
         // Dark capsule background with distance-scaled alpha
         int bgAlpha = (int) (0xEE * effectiveAlpha);
         int bgColor = (bgAlpha << 24) | 0x090D16;
 
-        // Border with distance-scaled pulse brightness
+        // Border with distance-scaled pulse brightness and colorblind accessibility filtering
         int pulseAlpha = (int) (target.pulse() * 255 * effectiveAlpha);
         int borderAlphaClamped = Math.clamp(pulseAlpha, (int) (120 * effectiveAlpha), (int) (255 * effectiveAlpha));
 
-        int borderColor = isCritical
-                ? ((borderAlphaClamped << 24) | 0xEF4444)
-                : ((borderAlphaClamped << 24) | 0xF59E0B);
+        int rawBorderRgb = isCritical ? 0xEF4444 : 0xF59E0B;
+        int filteredBorderRgb = dev.kunkun.onomixel.subtitle.CaptionVisuals.applyColorblindFilter(rawBorderRgb, colorblindMode);
+        int borderColor = (borderAlphaClamped << 24) | (filteredBorderRgb & 0xFFFFFF);
 
         // High-contrast localized label with distance-scaled alpha
         int textAlpha = (int) (255 * effectiveAlpha);

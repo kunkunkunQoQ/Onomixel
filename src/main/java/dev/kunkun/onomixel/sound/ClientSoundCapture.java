@@ -63,6 +63,7 @@ public final class ClientSoundCapture {
         if (!minecraft.isSameThread() || minecraft.level == null) return;
         synchronizeWorld(minecraft);
         if (minecraft.isPaused() || !OnomixelConfig.ENABLED.get()) return;
+        if (!OnomixelConfig.spatialWords() && !OnomixelConfig.THREAT_RADAR.get()) return;
         SoundInstance sound = event.getSound();
         if (sound == null || sound.isRelative() || sound.getAttenuation() != SoundInstance.Attenuation.LINEAR
                 || sound.canStartSilent() || sound.getSource() == SoundSource.MUSIC) return;
@@ -87,6 +88,7 @@ public final class ClientSoundCapture {
     public void onProjectileImpact(ProjectileImpactEvent event) {
         Minecraft minecraft = Minecraft.getInstance();
         if (!minecraft.isSameThread() || minecraft.level == null || !OnomixelConfig.ENABLED.get()) return;
+        if (!OnomixelConfig.spatialWords() && !OnomixelConfig.THREAT_RADAR.get()) return;
         synchronizeWorld(minecraft);
         if (event.getProjectile().level() != minecraft.level) return;
         ProjectileOwnershipEvidence.Family family;
@@ -111,6 +113,7 @@ public final class ClientSoundCapture {
         Minecraft minecraft = Minecraft.getInstance();
         if (!minecraft.isSameThread() || minecraft.level == null || event.getLevel() != minecraft.level
                 || !OnomixelConfig.ENABLED.get() || !(event.getEntity() instanceof ThrownTrident trident)) return;
+        if (!OnomixelConfig.spatialWords() && !OnomixelConfig.THREAT_RADAR.get()) return;
         synchronizeWorld(minecraft);
         String soundId = event.getSound() == null ? null
                 : event.getSound().unwrapKey().map(key -> key.identifier().toString()).orElse(null);
@@ -164,7 +167,8 @@ public final class ClientSoundCapture {
         long wallNow = System.nanoTime();
         long now = clock.sample(wallNow, minecraft.isPaused());
         lastActiveNanos = now;
-        if (currentLevel == null || !settings.enabled()) {
+        boolean active = settings.enabled() && (settings.spatialWords() || settings.threatRadar());
+        if (currentLevel == null || !active) {
             subtitles.clear();
             mailbox.clear();
             delayedEmissions.clear();

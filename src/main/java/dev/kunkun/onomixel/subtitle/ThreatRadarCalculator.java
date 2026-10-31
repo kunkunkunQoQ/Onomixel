@@ -22,6 +22,47 @@ public final class ThreatRadarCalculator {
         LEFT, RIGHT, TOP, BOTTOM
     }
 
+    /**
+     * Fast, zero-allocation frustum cone check determining whether a 3D coordinate is off-screen or behind the player.
+     */
+    public static boolean isOffScreen(
+            double camX, double camY, double camZ,
+            double lookX, double lookY, double lookZ,
+            double upX, double upY, double upZ,
+            double soundX, double soundY, double soundZ,
+            double verticalFovDegrees,
+            double projectionAspectRatio
+    ) {
+        double rx = lookY * upZ - lookZ * upY;
+        double ry = lookZ * upX - lookX * upZ;
+        double rz = lookX * upY - lookY * upX;
+        double rLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
+        if (rLen > 1e-6) {
+            rx /= rLen; ry /= rLen; rz /= rLen;
+        } else {
+            rx = 1.0; ry = 0.0; rz = 0.0;
+        }
+
+        double dx = soundX - camX;
+        double dy = soundY - camY;
+        double dz = soundZ - camZ;
+
+        double zCam = dx * lookX + dy * lookY + dz * lookZ;
+        if (zCam <= 0.20) return true; // Behind camera plane is always off screen
+
+        double xCam = dx * rx + dy * ry + dz * rz;
+        double yCam = dx * upX + dy * upY + dz * upZ;
+
+        double fov = Double.isFinite(verticalFovDegrees)
+                ? Math.clamp(verticalFovDegrees, 1.0, 179.0) : 70.0;
+        double verticalTangent = Math.tan(Math.toRadians(fov) * 0.5);
+        double aspect = Double.isFinite(projectionAspectRatio) && projectionAspectRatio > 0.0
+                ? projectionAspectRatio : 1.0;
+
+        return Math.abs(xCam) > zCam * verticalTangent * aspect
+                || Math.abs(yCam) > zCam * verticalTangent;
+    }
+
     public static EdgeTarget calculate(
             double camX, double camY, double camZ,
             double lookX, double lookY, double lookZ,

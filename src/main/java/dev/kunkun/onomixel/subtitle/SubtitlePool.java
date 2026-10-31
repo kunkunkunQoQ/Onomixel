@@ -17,7 +17,19 @@ public final class SubtitlePool {
                            double sourceX, double sourceY, double sourceZ,
                            double x, double y, double z, long createdNanos, long expiresNanos,
                            long hardExpiresNanos, long triggeredNanos, int priority,
-                           SoundSemantics semantics, String mergeGroup, boolean localPlayerShot) {
+                           SoundSemantics semantics, String mergeGroup, boolean localPlayerShot,
+                           long radarExpiresNanos) {
+        public Subtitle(long id, String soundId, String translationKey, String worldId, String category,
+                        double sourceX, double sourceY, double sourceZ,
+                        double x, double y, double z, long createdNanos, long expiresNanos,
+                        long hardExpiresNanos, long triggeredNanos, int priority,
+                        SoundSemantics semantics, String mergeGroup, boolean localPlayerShot) {
+            this(id, soundId, translationKey, worldId, category, sourceX, sourceY, sourceZ, x, y, z,
+                    createdNanos, expiresNanos, hardExpiresNanos, triggeredNanos, priority,
+                    semantics, mergeGroup, localPlayerShot,
+                    calcDefaultRadarExpires(soundId, expiresNanos, triggeredNanos));
+        }
+
         public Subtitle(long id, String soundId, String translationKey, String worldId, String category,
                         double sourceX, double sourceY, double sourceZ,
                         double x, double y, double z, long createdNanos, long expiresNanos,
@@ -35,6 +47,12 @@ public final class SubtitlePool {
             this(id, soundId, translationKey, worldId, category, sourceX, sourceY, sourceZ, x, y, z,
                     createdNanos, expiresNanos, hardExpiresNanos, triggeredNanos, priority,
                     SoundSemantics.classify(soundId), SoundSemantics.classify(soundId).mergeGroup(soundId), false);
+        }
+
+        private static long calcDefaultRadarExpires(String soundId, long expiresNanos, long triggeredNanos) {
+            long fallback = Math.max(0L, expiresNanos - triggeredNanos);
+            long rDuration = ThreatRegistry.radarDurationNanos(soundId, fallback);
+            return rDuration > 0 ? triggeredNanos + rDuration : expiresNanos;
         }
 
         public double distanceSquared(double cameraX, double cameraY, double cameraZ) {
@@ -98,13 +116,20 @@ public final class SubtitlePool {
             Subtitle previous = active.get(i);
             if (sameSource(previous, worldId, category, sourceX, sourceY, sourceZ)
                     && previous.semantics == semantics && previous.mergeGroup.equals(mergeGroup)) {
+                if (previous.expiresNanos <= now) {
+                    active.remove(i);
+                    break;
+                }
                 long refreshedExpires = Math.min(now + duration, previous.hardExpiresNanos);
+                long radarDur = ThreatRegistry.radarDurationNanos(soundId, duration);
+                long refreshedRadarExpires = radarDur > 0 ? now + radarDur : refreshedExpires;
                 active.set(i, new Subtitle(previous.id, soundId, key, worldId, category,
                         previous.sourceX, previous.sourceY, previous.sourceZ,
                         previous.x, previous.y, previous.z, previous.createdNanos,
                         Math.max(previous.expiresNanos, refreshedExpires), previous.hardExpiresNanos, now,
                         Math.max(previous.priority, priority), semantics, mergeGroup,
-                        previous.localPlayerShot && localPlayerShot));
+                        previous.localPlayerShot && localPlayerShot,
+                        Math.max(previous.radarExpiresNanos, refreshedRadarExpires)));
                 return;
             }
         }
@@ -114,8 +139,11 @@ public final class SubtitlePool {
             if (effectivePriority(semantics, priority) < effectivePriority(weakest.semantics, weakest.priority)) return;
             active.remove(weakestIndex);
         }
+        long radarDur = ThreatRegistry.radarDurationNanos(soundId, duration);
+        long radarExpires = radarDur > 0 ? now + radarDur : now + duration;
         active.add(new Subtitle(++sequence, soundId, key, worldId, category, sourceX, sourceY, sourceZ, x, y, z,
-                now, now + duration, now + 2 * duration, now, priority, semantics, mergeGroup, localPlayerShot));
+                now, now + duration, now + 2 * duration, now, priority, semantics, mergeGroup, localPlayerShot,
+                radarExpires));
     }
 
     public void renewStreaming(String soundId, double x, double y, double z, long newExpiresNanos) {
@@ -123,11 +151,14 @@ public final class SubtitlePool {
         for (int i = 0; i < active.size(); i++) {
             Subtitle previous = active.get(i);
             if (previous.soundId().equals(soundId)) {
+                long radarDur = ThreatRegistry.radarDurationNanos(soundId, newExpiresNanos - previous.createdNanos());
+                long newRadarExpires = radarDur > 0 ? previous.triggeredNanos() + radarDur : newExpiresNanos;
                 active.set(i, new Subtitle(previous.id(), previous.soundId(), previous.translationKey(),
                         previous.worldId(), previous.category(), x, y, z, x, y, z,
                         previous.createdNanos(), Math.max(previous.expiresNanos(), newExpiresNanos),
                         previous.hardExpiresNanos(), previous.triggeredNanos(), previous.priority(),
-                        previous.semantics(), previous.mergeGroup(), previous.localPlayerShot()));
+                        previous.semantics(), previous.mergeGroup(), previous.localPlayerShot(),
+                        Math.max(previous.radarExpiresNanos(), newRadarExpires)));
                 return;
             }
         }
@@ -167,6 +198,7 @@ public final class SubtitlePool {
         double rangeSquared = maxDistance * maxDistance;
         List<Subtitle> candidates = new ArrayList<>();
         for (Subtitle subtitle : active) {
+            if (subtitle.expiresNanos <= now) continue;
             double distance = subtitle.sourceDistanceSquared(cameraX, cameraY, cameraZ);
             if (distance >= 0.75 * 0.75 && distance <= rangeSquared) candidates.add(subtitle);
         }
@@ -222,7 +254,7 @@ public final class SubtitlePool {
     }
 
     public void expire(long now) {
-        active.removeIf(subtitle -> now >= subtitle.expiresNanos);
+        active.removeIf(subtitle -> now >= Math.max(subtitle.expiresNanos, subtitle.radarExpiresNanos));
     }
 
     public int size() { return active.size(); }
