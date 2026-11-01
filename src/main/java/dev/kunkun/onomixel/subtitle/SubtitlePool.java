@@ -10,8 +10,35 @@ import java.util.List;
 public final class SubtitlePool {
     public static final int CAPACITY = 256;
     private static final double MERGE_DISTANCE_SQUARED = 0.75 * 0.75;
+
+    private static final class CandidateEntry {
+        Subtitle subtitle;
+        double distanceSquared;
+        int effectivePriority;
+    }
+
+    private static final Comparator<CandidateEntry> CANDIDATE_COMPARATOR = (a, b) -> {
+        int p = Integer.compare(b.effectivePriority, a.effectivePriority);
+        if (p != 0) return p;
+        int d = Double.compare(a.distanceSquared, b.distanceSquared);
+        if (d != 0) return d;
+        return Long.compare(b.subtitle.createdNanos(), a.subtitle.createdNanos());
+    };
+
     private final List<Subtitle> active = new ArrayList<>();
     private long sequence;
+
+    // Zero-GC pooling for candidates(...) per-frame queries
+    private final CandidateEntry[] candidatePool = new CandidateEntry[CAPACITY];
+    private final List<CandidateEntry> important = new ArrayList<>(CAPACITY);
+    private final List<CandidateEntry> ordinary = new ArrayList<>(CAPACITY);
+    private final List<Subtitle> ordered = new ArrayList<>(CAPACITY);
+
+    public SubtitlePool() {
+        for (int i = 0; i < CAPACITY; i++) {
+            candidatePool[i] = new CandidateEntry();
+        }
+    }
 
     public record Subtitle(long id, String soundId, String translationKey, String worldId, String category,
                            double sourceX, double sourceY, double sourceZ,
@@ -116,7 +143,7 @@ public final class SubtitlePool {
             Subtitle previous = active.get(i);
             if (sameSource(previous, worldId, category, sourceX, sourceY, sourceZ)
                     && previous.semantics == semantics && previous.mergeGroup.equals(mergeGroup)) {
-                if (previous.expiresNanos <= now) {
+                if (Math.max(previous.expiresNanos, previous.radarExpiresNanos) <= now) {
                     active.remove(i);
                     break;
                 }
@@ -147,7 +174,7 @@ public final class SubtitlePool {
     }
 
     public void renewStreaming(String soundId, double x, double y, double z, long newExpiresNanos) {
-        if (soundId == null) return;
+        if (soundId == null || !Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)) return;
         for (int i = 0; i < active.size(); i++) {
             Subtitle previous = active.get(i);
             if (previous.soundId().equals(soundId)) {
@@ -196,33 +223,41 @@ public final class SubtitlePool {
     public List<Subtitle> candidates(double cameraX, double cameraY, double cameraZ, double maxDistance, long now) {
         expire(now);
         double rangeSquared = maxDistance * maxDistance;
-        List<Subtitle> candidates = new ArrayList<>();
-        for (Subtitle subtitle : active) {
+        important.clear();
+        ordinary.clear();
+        ordered.clear();
+
+        int candidateCount = 0;
+        for (int i = 0; i < active.size(); i++) {
+            Subtitle subtitle = active.get(i);
             if (subtitle.expiresNanos <= now) continue;
             double distance = subtitle.sourceDistanceSquared(cameraX, cameraY, cameraZ);
-            if (distance >= 0.75 * 0.75 && distance <= rangeSquared) candidates.add(subtitle);
+            if (distance >= 0.75 * 0.75 && distance <= rangeSquared) {
+                if (candidateCount >= candidatePool.length) break;
+                CandidateEntry entry = candidatePool[candidateCount++];
+                entry.subtitle = subtitle;
+                entry.distanceSquared = distance;
+                entry.effectivePriority = effectivePriority(subtitle.semantics, subtitle.priority);
+                if (entry.effectivePriority >= 6) {
+                    important.add(entry);
+                } else {
+                    ordinary.add(entry);
+                }
+            }
         }
-        Comparator<Subtitle> distanceOrder = Comparator
-                .comparingDouble((Subtitle s) -> s.sourceDistanceSquared(cameraX, cameraY, cameraZ))
-                .thenComparing(Comparator.comparingLong(Subtitle::createdNanos).reversed());
-        Comparator<Subtitle> importanceOrder = Comparator
-                .comparingInt((Subtitle s) -> effectivePriority(s.semantics, s.priority)).reversed()
-                .thenComparing(distanceOrder);
-        List<Subtitle> important = new ArrayList<>();
-        List<Subtitle> ordinary = new ArrayList<>();
-        for (Subtitle subtitle : candidates) {
-            if (effectivePriority(subtitle.semantics, subtitle.priority) >= 6) important.add(subtitle);
-            else ordinary.add(subtitle);
-        }
-        important.sort(importanceOrder);
-        ordinary.sort(importanceOrder);
+
+        important.sort(CANDIDATE_COMPARATOR);
+        ordinary.sort(CANDIDATE_COMPARATOR);
 
         // Keep one ordinary opportunity for every three important candidates when both exist.
-        List<Subtitle> ordered = new ArrayList<>(candidates.size());
         int high = 0, normal = 0;
         while (high < important.size() || normal < ordinary.size()) {
-            for (int i = 0; i < 3 && high < important.size(); i++) ordered.add(important.get(high++));
-            if (normal < ordinary.size()) ordered.add(ordinary.get(normal++));
+            for (int i = 0; i < 3 && high < important.size(); i++) {
+                ordered.add(important.get(high++).subtitle);
+            }
+            if (normal < ordinary.size()) {
+                ordered.add(ordinary.get(normal++).subtitle);
+            }
         }
         return ordered;
     }
@@ -261,5 +296,10 @@ public final class SubtitlePool {
 
     public List<Subtitle> snapshot() { return List.copyOf(active); }
 
-    public void clear() { active.clear(); }
+    public void clear() {
+        active.clear();
+        important.clear();
+        ordinary.clear();
+        ordered.clear();
+    }
 }

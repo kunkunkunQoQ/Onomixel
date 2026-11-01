@@ -89,6 +89,21 @@ public final class CrosshairComfortZone {
         }
     }
 
+    /**
+     * Radial comfort zones relative to the screen crosshair reticle.
+     * <p>
+     * <b>Coordinate System:</b> Distances are measured in screen pixels from the center of the reticle
+     * (screen center {@code (width / 2, height / 2)}):
+     * <ul>
+     *   <li>{@link #CORE}: Inside inner radius (e.g. {@code distance < 40px}). Absolute exclusion zone.
+     *       Text points or bounding boxes intersecting this zone are strongly penalized or vetoed to keep
+     *       the player's direct line of sight unobstructed.</li>
+     *   <li>{@link #BUFFER}: Inside transition buffer ring (e.g. {@code 40px <= distance < 80px}).
+     *       Text experiences outward radial repulsion easing smoothly to zero at the outer edge.</li>
+     *   <li>{@link #OUTSIDE}: Outside comfort zone (e.g. {@code distance >= 80px}). Free placement area
+     *       with zero crosshair interference or displacement.</li>
+     * </ul>
+     */
     public enum Zone {
         CORE,
         BUFFER,

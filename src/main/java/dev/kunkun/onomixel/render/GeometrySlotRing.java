@@ -24,6 +24,7 @@ public final class GeometrySlotRing {
     public static final int MAX_SCOPE_DEPTH = 32;
     private static final float NEAR_CLIP = 0.05F;
 
+    private static final System.Logger LOGGER = System.getLogger(GeometrySlotRing.class.getName());
     private static final ThreadLocal<GeometrySlotRing> THREAD_LOCAL = ThreadLocal.withInitial(GeometrySlotRing::new);
     private static volatile boolean WARNED_OVERFLOW = false;
 
@@ -207,7 +208,7 @@ public final class GeometrySlotRing {
             if (active >= capacity) {
                 if (safeDegradationEnabled) {
                     if (!WARNED_OVERFLOW) {
-                        System.err.println("[Onomixel] WARN: GeometrySlotRing capacity (" + capacity + ") exceeded by active scopes. Safely wrapping around.");
+                        LOGGER.log(System.Logger.Level.WARNING, "GeometrySlotRing capacity ({0}) exceeded by active scopes. Safely wrapping around.", capacity);
                         WARNED_OVERFLOW = true;
                     }
                     int index = (cursor++) & mask;

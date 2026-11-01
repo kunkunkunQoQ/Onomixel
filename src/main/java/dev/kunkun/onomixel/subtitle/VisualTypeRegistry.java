@@ -25,6 +25,21 @@ public final class VisualTypeRegistry {
     public record Rule(Predicate<String> matcher, VisualType type) {}
 
     static {
+        initBuiltins();
+    }
+
+    /**
+     * Re-initializes built-in visual types and purges dynamic external mappings for test isolation.
+     */
+    public static void resetForTesting() {
+        TYPES.clear();
+        SOUND_MAP.clear();
+        SOUND_COLORS.clear();
+        PATTERNS.clear();
+        initBuiltins();
+    }
+
+    private static void initBuiltins() {
         registerType(VisualTypes.INTERACTION);
         registerType(VisualTypes.BREAK);
         registerType(VisualTypes.PICKUP);

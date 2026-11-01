@@ -43,15 +43,18 @@ public final class ClientSoundCapture {
     private final AtomicBoolean engineReloaded = new AtomicBoolean();
     private final SoundEmissionThrottle throttle = new SoundEmissionThrottle();
     private final ProjectileOwnershipEvidence projectileEvidence = new ProjectileOwnershipEvidence();
+    private final SoundLifecycleCoordinator lifecycle = new SoundLifecycleCoordinator(
+            subtitles, clock, mailbox, delayedEmissions, throttle, projectileEvidence
+    );
     private static final StackWalker SOUND_CALLER = StackWalker.getInstance();
     private ClientLevel currentLevel;
     private CaptionSettings settings = CaptionSettings.defaults();
     private volatile long lastActiveNanos;
 
-    private record Request(SoundEngine engine, SoundDefinition definition, SoundSource category,
+    record Request(SoundEngine engine, SoundDefinition definition, SoundSource category,
                            double x, double y, double z, boolean localPlayerShot) {}
 
-    private record PendingDelayedEmission(long triggerAtNanos, SoundDefinition definition, String category,
+    record PendingDelayedEmission(long triggerAtNanos, SoundDefinition definition, String category,
                                           double sourceX, double sourceY, double sourceZ,
                                           double anchorX, double anchorY, double anchorZ,
                                           long duration, int importance, String world, boolean localPlayerShot) {}
@@ -70,8 +73,13 @@ public final class ClientSoundCapture {
         String soundId = sound.getIdentifier().toString();
         SoundDefinition definition = SoundDefinitions.findOrInfer(soundId);
         if (definition == null || !Double.isFinite(sound.getX()) || !Double.isFinite(sound.getY()) || !Double.isFinite(sound.getZ())) return;
-        if (definition.semantics() == SoundSemantics.STEP && SOUND_CALLER.walk(frames -> frames.anyMatch(frame ->
-                SoundEventPolicy.isLocalPlayerCall(frame.getClassName(), frame.getMethodName())))) return;
+        if (definition.semantics() == SoundSemantics.STEP && minecraft.player != null) {
+            double dx = sound.getX() - minecraft.player.getX();
+            double dy = sound.getY() - minecraft.player.getY();
+            double dz = sound.getZ() - minecraft.player.getZ();
+            if (dx * dx + dy * dy + dz * dz <= 1.0 && SOUND_CALLER.walk(frames -> frames.limit(8).anyMatch(frame ->
+                    SoundEventPolicy.isLocalPlayerCall(frame.getClassName(), frame.getMethodName())))) return;
+        }
         long requestedAt = System.nanoTime();
         var explicitOwner = projectileEvidence.resolveEntitySound(soundId, sound.getX(), sound.getY(), sound.getZ(), requestedAt);
         var impactOwner = explicitOwner.isPresent() ? java.util.Optional.<Boolean>empty()
@@ -304,14 +312,7 @@ public final class ClientSoundCapture {
 
     private void synchronizeWorld(Minecraft minecraft) {
         if (engineReloaded.getAndSet(false) || currentLevel != minecraft.level) {
-            subtitles.clear();
-            delayedEmissions.clear();
-            mailbox.clear();
-            clock.reset();
-            throttle.clear();
-            projectileEvidence.clear();
-            BossChoreographyDirector.getInstance().reset();
-            StreamingCaptionSession.clearAllSessions();
+            resetAllWorldState();
             currentLevel = minecraft.level;
         }
     }
@@ -319,22 +320,32 @@ public final class ClientSoundCapture {
     @SubscribeEvent
     public void onUnload(LevelEvent.Unload event) {
         if (event.getLevel() == currentLevel && Minecraft.getInstance().isSameThread()) {
-            subtitles.clear();
-            delayedEmissions.clear();
-            mailbox.clear();
-            clock.reset();
-            throttle.clear();
-            projectileEvidence.clear();
-            BossChoreographyDirector.getInstance().reset();
-            StreamingCaptionSession.clearAllSessions();
+            resetAllWorldState();
             currentLevel = null;
         }
     }
 
+    /**
+     * Resets all cascade state machines and event queues across dimensions, world unloads, or death respawns.
+     */
+    void resetAllWorldState() {
+        lifecycle.resetAllWorldState();
+    }
+
+    PlaybackMailbox<SoundInstance, Request> mailbox() { return mailbox; }
+    BoundedDelayedQueue<PendingDelayedEmission> delayedEmissions() { return delayedEmissions; }
+    SoundEmissionThrottle throttle() { return throttle; }
+    ProjectileOwnershipEvidence projectileEvidence() { return projectileEvidence; }
+    SubtitleClock clock() { return clock; }
+    SoundLifecycleCoordinator lifecycle() { return lifecycle; }
+
+    public void handlePauseState(boolean paused, long nowNanos) {
+        lifecycle.handlePauseState(paused, nowNanos);
+    }
+
     @SubscribeEvent
     public void onPauseChanged(ClientPauseChangeEvent.Post event) {
-        clock.sample(System.nanoTime(), event.isPaused());
-        mailbox.clear();
+        handlePauseState(event.isPaused(), System.nanoTime());
     }
 
     /** Mod-bus callback may run during a resource reload; state is reset later on the client thread. */

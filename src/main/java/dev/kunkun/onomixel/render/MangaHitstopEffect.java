@@ -8,7 +8,6 @@ import dev.kunkun.onomixel.subtitle.CaptionVisuals;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Locale;
 
 /**
  * Persona 5 / Super Smash Bros inspired 2-frame Manga Hitstop & Radial Comic Starburst Spikes.

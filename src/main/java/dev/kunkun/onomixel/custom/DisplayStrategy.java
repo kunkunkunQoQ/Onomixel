@@ -2,7 +2,6 @@ package dev.kunkun.onomixel.custom;
 
 import java.util.List;
 import java.util.Objects;
-import java.util.Random;
 
 /**
  * Text resolution strategy for customized onomatopoeia sound definitions.

@@ -2,11 +2,16 @@ package dev.kunkun.onomixel.subtitle;
 
 import dev.kunkun.onomixel.sound.SoundSemantics;
 
-/** One immutable configuration snapshot shared by admission and frame extraction. */
+/**
+ * One immutable configuration snapshot shared by admission and frame extraction.
+ *
+ * @param altitudeBadges deprecated per DEC-07, prefix altitude badges have been superseded by 3D world projection
+ *                       and 2D radar altitude arrows. Preserved solely for backward compatibility.
+ */
 public record CaptionSettings(boolean enabled, DisplayMode mode, ColorStyle style, int maxDistance,
                               int maxVisible, long durationNanos, double textScale, double opacity,
                               boolean distanceScaling, boolean fade, Durations durations,
-                              boolean spatialWords, boolean threatRadar, boolean altitudeBadges,
+                              boolean spatialWords, boolean threatRadar, @Deprecated boolean altitudeBadges,
                               boolean kineticTypography, boolean speedOfSound,
                               AestheticStyle aestheticStyle, ColorblindMode colorblindMode) {
 
@@ -16,7 +21,7 @@ public record CaptionSettings(boolean enabled, DisplayMode mode, ColorStyle styl
     public CaptionSettings(boolean enabled, DisplayMode mode, ColorStyle style, int maxDistance,
                            int maxVisible, long durationNanos, double textScale, double opacity,
                            boolean distanceScaling, boolean fade, Durations durations,
-                           boolean threatRadar, boolean altitudeBadges, boolean kineticTypography,
+                           boolean threatRadar, @Deprecated boolean altitudeBadges, boolean kineticTypography,
                            boolean speedOfSound, AestheticStyle aestheticStyle, ColorblindMode colorblindMode) {
         this(enabled, mode, style, maxDistance, maxVisible, durationNanos, textScale, opacity,
                 distanceScaling, fade, durations, true, threatRadar, altitudeBadges, kineticTypography,
@@ -37,7 +42,7 @@ public record CaptionSettings(boolean enabled, DisplayMode mode, ColorStyle styl
                             double impact, double voice, double ambient) {
         public double scale(SoundSemantics semantics) {
             return switch (semantics) {
-                case STEP -> step;
+                case STEP, GALLOP -> step;
                 case PICKUP -> pickup;
                 case INTERACTION -> interaction;
                 case BREAK -> breaking;

@@ -54,6 +54,15 @@ public final class OnomixelConfigScreen extends Screen {
     private int cachedOffW = -1;
     private String cachedWordsOffLabel;
     private int cachedWordsOffW = -1;
+    private String cachedTitle;
+    private int cachedTitleW = -1;
+    private String cachedSandboxLabel;
+    private int cachedActiveRulesCount = -1;
+    private String cachedActiveRulesStr;
+    private int cachedActiveRulesW = -1;
+    private String cachedSampleWord;
+    private int cachedSampleWordW = -1;
+    private AestheticStyle cachedSampleAesthetic;
 
     public OnomixelConfigScreen(Screen parent) {
         super(Component.translatable("onomixel.config.screen.title"));
@@ -101,6 +110,15 @@ public final class OnomixelConfigScreen extends Screen {
         cachedOffW = -1;
         cachedWordsOffLabel = null;
         cachedWordsOffW = -1;
+        cachedTitle = null;
+        cachedTitleW = -1;
+        cachedSandboxLabel = null;
+        cachedActiveRulesCount = -1;
+        cachedActiveRulesStr = null;
+        cachedActiveRulesW = -1;
+        cachedSampleWord = null;
+        cachedSampleWordW = -1;
+        cachedSampleAesthetic = null;
 
         int leftCol = width / 2 - 155;
         int rightCol = width / 2 + 5;
@@ -128,6 +146,7 @@ public final class OnomixelConfigScreen extends Screen {
                 getAestheticButtonText(),
                 btn -> {
                     draftAesthetic = cycleAesthetic(draftAesthetic);
+                    cachedSampleWord = null;
                     btn.setMessage(getAestheticButtonText());
                 }
         ).bounds(leftCol, startY + rowGap * 2, 150, 20).build());
@@ -160,29 +179,29 @@ public final class OnomixelConfigScreen extends Screen {
         addRenderableWidget(new DraggableSlider(
                 rightCol, startY, 150, 20,
                 Component.translatable("onomixel.config.screen.text_scale"),
-                draftScale, 0.50, 2.00, "%.2fx",
-                val -> draftScale = val
+                draftScale, 0.50, 2.00, 0.05, "%.2fx",
+                val -> draftScale = Math.round(val * 100.0) / 100.0
         ));
 
         addRenderableWidget(new DraggableSlider(
                 rightCol, startY + rowGap, 150, 20,
                 Component.translatable("onomixel.config.screen.max_distance"),
-                draftDistance, 8.0, 48.0, "%.0fm",
+                draftDistance, 8.0, 48.0, 1.0, "%.0fm",
                 val -> draftDistance = (int) Math.round(val)
         ));
 
         addRenderableWidget(new DraggableSlider(
                 rightCol, startY + rowGap * 2, 150, 20,
                 Component.translatable("onomixel.config.screen.opacity"),
-                draftOpacity * 100.0, 20.0, 100.0, "%.0f%%",
-                val -> draftOpacity = val / 100.0
+                draftOpacity * 100.0, 20.0, 100.0, 5.0, "%.0f%%",
+                val -> draftOpacity = Math.round(val) / 100.0
         ));
 
         addRenderableWidget(new DraggableSlider(
                 rightCol, startY + rowGap * 3, 150, 20,
                 Component.translatable("onomixel.config.screen.duration"),
-                draftDuration, 0.5, 3.0, "%.1fs",
-                val -> draftDuration = val
+                draftDuration, 0.5, 3.0, 0.1, "%.1fs",
+                val -> draftDuration = Math.round(val * 10.0) / 10.0
         ));
 
         addRenderableWidget(Button.builder(
@@ -216,7 +235,11 @@ public final class OnomixelConfigScreen extends Screen {
 
         addRenderableWidget(Button.builder(
                 Component.translatable("onomixel.config.screen.reload_custom_words"),
-                btn -> SoundOverrideLoader.reloadAll()
+                btn -> {
+                    SoundOverrideLoader.reloadAll();
+                    cachedSampleWord = null;
+                    cachedActiveRulesCount = -1;
+                }
         ).bounds(leftCol, actionRowY, 150, 20).build());
 
         addRenderableWidget(Button.builder(
@@ -327,10 +350,12 @@ public final class OnomixelConfigScreen extends Screen {
         extractMenuBackground(graphics);
         super.extractRenderState(graphics, mouseX, mouseY, partialTicks);
 
-        // Header Title
-        String titleText = Component.translatable("onomixel.config.screen.title").getString();
-        int titleWidth = font.width(titleText);
-        graphics.text(font, titleText, width / 2 - titleWidth / 2, height < 290 ? 8 : 12, 0xFFFFFFFF, true);
+        // Header Title (Zero-allocation cached label)
+        if (cachedTitle == null) {
+            cachedTitle = Component.translatable("onomixel.config.screen.title").getString();
+            cachedTitleW = font.width(cachedTitle);
+        }
+        graphics.text(font, cachedTitle, width / 2 - cachedTitleW / 2, height < 290 ? 8 : 12, 0xFFFFFFFF, true);
 
         // Live Dynamic Preview Sandbox Box in the lower section (aligned with double-column 310px width)
         int boxW = 310;
@@ -344,15 +369,20 @@ public final class OnomixelConfigScreen extends Screen {
         graphics.fill(boxX, boxY, boxX + 1, boxY + boxH, 0x8838BDF8);
         graphics.fill(boxX + boxW - 1, boxY, boxX + boxW, boxY + boxH, 0x8838BDF8);
 
-        String sandboxLabel = Component.translatable("onomixel.config.screen.sandbox_title").getString();
-        graphics.text(font, sandboxLabel, boxX + 8, boxY + 3, 0xFF94A3B8, false);
+        if (cachedSandboxLabel == null) {
+            cachedSandboxLabel = Component.translatable("onomixel.config.screen.sandbox_title").getString();
+        }
+        graphics.text(font, cachedSandboxLabel, boxX + 8, boxY + 3, 0xFF94A3B8, false);
 
         // Render Active Custom Rules Count in the top-right of the sandbox box
         int activeRules = SoundCustomizationManager.activeRuleCount();
-        String activeText = Component.translatable("onomixel.config.screen.active_rules", activeRules).getString();
-        int activeTextW = font.width(activeText);
+        if (cachedActiveRulesCount != activeRules || cachedActiveRulesStr == null) {
+            cachedActiveRulesCount = activeRules;
+            cachedActiveRulesStr = Component.translatable("onomixel.config.screen.active_rules", activeRules).getString();
+            cachedActiveRulesW = font.width(cachedActiveRulesStr);
+        }
         int activeColor = activeRules > 0 ? 0xFF38BDF8 : 0xFF94A3B8;
-        graphics.text(font, activeText, boxX + boxW - activeTextW - 8, boxY + 3, activeColor, false);
+        graphics.text(font, cachedActiveRulesStr, boxX + boxW - cachedActiveRulesW - 8, boxY + 3, activeColor, false);
 
         // Compute simulated motion clock at 60 FPS
         double age = (System.currentTimeMillis() % 1600) / 1000.0;
@@ -412,23 +442,29 @@ public final class OnomixelConfigScreen extends Screen {
                 }
             }
 
-            // Resolve sample display text
-            String sampleWord;
-            if (customRule != null && customRule.display() != null) {
-                String resolved = customRule.display().resolve(42L, previewSound);
-                if (customRule.display().isLiteral()) {
-                    sampleWord = resolved;
+            // Resolve sample display text (Zero-allocation cached label)
+            if (cachedSampleWord == null || cachedSampleAesthetic != draftAesthetic) {
+                cachedSampleAesthetic = draftAesthetic;
+                String word;
+                if (customRule != null && customRule.display() != null) {
+                    String resolved = customRule.display().resolve(42L, previewSound);
+                    if (customRule.display().isLiteral()) {
+                        word = resolved;
+                    } else {
+                        word = Component.translatable(resolved).getString();
+                    }
                 } else {
-                    sampleWord = Component.translatable(resolved).getString();
+                    word = Component.translatable("onomixel.config.screen.sandbox_sample").getString();
                 }
-            } else {
-                sampleWord = Component.translatable("onomixel.config.screen.sandbox_sample").getString();
-            }
 
-            if (draftAesthetic == AestheticStyle.MEDIEVAL) {
-                sampleWord = "✦ " + sampleWord + " ✦";
+                if (draftAesthetic == AestheticStyle.MEDIEVAL) {
+                    word = "✦ " + word + " ✦";
+                }
+                cachedSampleWord = word;
+                cachedSampleWordW = font.width(word);
             }
-            int sampleWidth = font.width(sampleWord);
+            String sampleWord = cachedSampleWord;
+            int sampleWidth = cachedSampleWordW;
 
             int alpha = (int) Math.round(draftOpacity * 255);
             int finalRgbWithAlpha = (alpha << 24) | (finalColor & 0x00FFFFFF);
@@ -539,37 +575,44 @@ public final class OnomixelConfigScreen extends Screen {
     }
 
     /**
-     * Draggable slider widget supporting smooth mouse dragging and instant value callback.
+     * Draggable slider widget supporting smooth mouse dragging, step snapping, and instant value callback.
      */
     private static class DraggableSlider extends AbstractSliderButton {
         private final double min;
         private final double max;
+        private final double step;
         private final Component labelPrefix;
         private final String unitFormat;
         private final java.util.function.DoubleConsumer onValueChange;
 
         public DraggableSlider(int x, int y, int width, int height, Component labelPrefix,
-                               double current, double min, double max, String unitFormat,
+                               double current, double min, double max, double step, String unitFormat,
                                java.util.function.DoubleConsumer onValueChange) {
             super(x, y, width, height, Component.empty(), (Math.clamp(current, min, max) - min) / (max - min));
             this.min = min;
             this.max = max;
+            this.step = step > 0 ? step : 1.0;
             this.labelPrefix = labelPrefix;
             this.unitFormat = unitFormat;
             this.onValueChange = onValueChange;
             this.updateMessage();
         }
 
+        private double snappedValue() {
+            double snapped = min + Math.round((value * (max - min)) / step) * step;
+            return Math.clamp(snapped, min, max);
+        }
+
         @Override
         protected void updateMessage() {
-            double actual = min + value * (max - min);
+            double actual = snappedValue();
             String valStr = String.format(Locale.ROOT, unitFormat, actual);
             setMessage(Component.empty().append(labelPrefix).append(": ").append(valStr));
         }
 
         @Override
         protected void applyValue() {
-            double actual = min + value * (max - min);
+            double actual = snappedValue();
             onValueChange.accept(actual);
         }
     }

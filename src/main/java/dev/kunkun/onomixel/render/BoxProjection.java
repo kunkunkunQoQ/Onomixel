@@ -3,8 +3,6 @@ package dev.kunkun.onomixel.render;
 import org.joml.Matrix4fc;
 import org.joml.Vector4f;
 
-import java.util.ArrayList;
-import java.util.List;
 
 /** Projects a source AABB, clipping its edges when the camera is close to or inside its silhouette. */
 public final class BoxProjection {

@@ -38,11 +38,25 @@ import java.util.Set;
 
 /** Client-thread layout: visible-only searches, per-frame camera-relative targets, bounded world motion. */
 public final class DynamicSubtitleLayout {
+    public static final double SCORE_PENALTY_CROSSHAIR_CORE = 150.0;
+    public static final double SCORE_PENALTY_CROSSHAIR_BUFFER = 80.0;
+    public static final double SCORE_PENALTY_BUFFER_DEFAULT = 25.0;
+    public static final double SCORE_PENALTY_WEAPON_MASK = 60.0;
+    public static final double MIN_HORIZONTAL_CLEARANCE = 0.68;
+    public static final double PIVOT_MIN_EYE_DISTANCE_SQ = 0.85 * 0.85;
+    public static final double PIVOT_FORWARD_PUSH = 0.90;
+
     private final Map<Long, State> states = new HashMap<>();
     private final CaptionTextCache texts;
     private ClientLevel level;
     private long frame;
     private LayoutBudget.Counts lastWork = new LayoutBudget.Counts(0, 0, 0, 0);
+    private final List<BillboardProjection.Bounds> scratchOtherBounds = new ArrayList<>(32);
+    private final double[] scratchScores = new double[16];
+    private final List<BillboardProjection.Bounds> scratchRouteObstacles = new ArrayList<>(32);
+    private final Set<Long> scratchLiveIds = new HashSet<>(32);
+    private final List<SubtitlePool.Subtitle> scratchEligible = new ArrayList<>(32);
+    private final List<LayoutBudget.Candidate> scratchPreparation = new ArrayList<>(32);
 
     public DynamicSubtitleLayout() { this(new CaptionTextCache()); }
     DynamicSubtitleLayout(CaptionTextCache texts) { this.texts = texts; }
@@ -57,6 +71,24 @@ public final class DynamicSubtitleLayout {
         CaptionRepulsion.RepulsionOffset repulsion = CaptionRepulsion.RepulsionOffset.ZERO;
     }
 
+    /**
+     * Immutable layout result for a single visible 3D world-space subtitle in the current frame.
+     * <p>
+     * <b>Coordinate System:</b>
+     * <ul>
+     *   <li>{@link #point()}: World coordinates [X, Y, Z] in Minecraft block/world units (Double precision),
+     *       representing the anchor position for billboard rendering.</li>
+     *   <li>{@link #transform()}: Contains the final resolved world position, dynamic kinetic scale,
+     *       orientation billboard rotation, and 2D projected screen bounds.</li>
+     *   <li>{@link #alphaMultiplier()}: Environmental alpha multiplier in {@code [0.0f, 1.0f]}
+     *       (e.g., proximity/distance fade, submerged view, dark ambient, low health pulsation).</li>
+     * </ul>
+     *
+     * @param subtitle Original audio event metadata (soundId, source position, category, lifetime)
+     * @param transform Resolved world-space transform and screen projection bounds
+     * @param text Cached glyph sequence, styling, and visual advance metrics
+     * @param alphaMultiplier Environmental opacity multiplier in [0.0f, 1.0f]
+     */
     public record Placed(SubtitlePool.Subtitle subtitle, CaptionTransform transform, CaptionTextCache.Text text, float alphaMultiplier) {
         public Placed(SubtitlePool.Subtitle subtitle, CaptionTransform transform, CaptionTextCache.Text text) {
             this(subtitle, transform, text, 1.0f);
@@ -74,7 +106,16 @@ public final class DynamicSubtitleLayout {
                        List<BillboardProjection.Bounds> silhouettes, List<BillboardProjection.Bounds> slotBounds,
                        boolean darkAmbient, float alphaMultiplier) {}
 
-    public void clear() { states.clear(); level = null; lastWork = new LayoutBudget.Counts(0, 0, 0, 0); }
+    public void clear() {
+        states.clear();
+        level = null;
+        lastWork = new LayoutBudget.Counts(0, 0, 0, 0);
+        scratchOtherBounds.clear();
+        scratchRouteObstacles.clear();
+        scratchLiveIds.clear();
+        scratchEligible.clear();
+        scratchPreparation.clear();
+    }
 
     public List<Placed> layout(Minecraft minecraft, SubtitlePool pool, CameraRenderState camera, long now) {
         return layout(minecraft, pool, camera, now, OnomixelConfig.snapshot());
@@ -86,9 +127,9 @@ public final class DynamicSubtitleLayout {
         try (var scope = GeometrySlotRing.openScope()) {
             frame++;
             BossChoreographyDirector.getInstance().cleanExpiredFields(now);
-            Set<Long> live = new HashSet<>();
-            for (var subtitle : pool.snapshot()) live.add(subtitle.id());
-            states.keySet().removeIf(id -> (id > 0 && !live.contains(id)) || (id < 0 && now - states.get(id).lastFrame > 2_000_000_000L));
+            scratchLiveIds.clear();
+            for (var subtitle : pool.snapshot()) scratchLiveIds.add(subtitle.id());
+            states.keySet().removeIf(id -> (id > 0 && !scratchLiveIds.contains(id)) || (id < 0 && now - states.get(id).lastFrame > 2_000_000_000L));
 
             Vec3 eye = camera.pos;
             Point eyePoint = point(eye);
@@ -119,7 +160,8 @@ public final class DynamicSubtitleLayout {
             List<BillboardProjection.Bounds> models = new ArrayList<>();
 
             // Cheap projection uses approximate source bounds, without block shapes or world rays.
-            List<SubtitlePool.Subtitle> eligible = new ArrayList<>();
+            scratchEligible.clear();
+            List<SubtitlePool.Subtitle> eligible = scratchEligible;
             boolean raining = level.isRainingAt(BlockPos.containing(eye));
             boolean submerged = !level.getFluidState(BlockPos.containing(eye)).isEmpty();
             Frame context = new Frame(eyePoint, right, up, forward, settings, now, submerged,
@@ -158,7 +200,8 @@ public final class DynamicSubtitleLayout {
                 }
             }
 
-            List<LayoutBudget.Candidate> preparation = new ArrayList<>();
+            scratchPreparation.clear();
+            List<LayoutBudget.Candidate> preparation = scratchPreparation;
             for (var event : candidatesForLayout) {
                 State previous = states.get(event.id());
                 preparation.add(new LayoutBudget.Candidate(event.id(), previous != null && previous.drawnFrame == frame - 1));
@@ -201,7 +244,7 @@ public final class DynamicSubtitleLayout {
             if (bossPrivilege.displacement().x() != 0 || bossPrivilege.displacement().y() != 0 || bossPrivilege.displacement().z() != 0) {
                 pivot = pivot.plus(bossPrivilege.displacement());
             }
-            if (!block && pivot.distanceSquared(eyePoint) < 0.85 * 0.85) pivot = pivot.plus(forward, 0.90);
+            if (!block && pivot.distanceSquared(eyePoint) < PIVOT_MIN_EYE_DISTANCE_SQ) pivot = pivot.plus(forward, PIVOT_FORWARD_PUSH);
             double distance = Math.sqrt(pivot.distanceSquared(eyePoint));
             Point toward = direction(pivot, eyePoint);
             Point contact = new Point(event.x(), event.y(), event.z());
@@ -217,7 +260,7 @@ public final class DynamicSubtitleLayout {
             push = Math.min(push, Math.max(0, distance - 0.70));
             double horizontal = extent(source.body, right) + reserve.halfWidth * reservedScale + 0.17 + envelope.maxSide();
             if (selfHurt) {
-                horizontal = Math.max(horizontal, 0.68);
+                horizontal = Math.max(horizontal, MIN_HORIZONTAL_CLEARANCE);
             }
             List<Point> points = CaptionPlacement.aroundSource(pivot, toward, right, up, push,
                     horizontal, above, below,
@@ -264,16 +307,17 @@ public final class DynamicSubtitleLayout {
             Job job = jobs.get(jobIndex);
             if (!tickets.contains(job.event.id())) continue;
             State state = job.state;
-            List<BillboardProjection.Bounds> others = otherBounds(occupied, job.event.id());
-            double[] scores = new double[job.points.size()];
-            java.util.Arrays.fill(scores, Double.POSITIVE_INFINITY);
+            collectOtherBounds(occupied, job.event.id(), scratchOtherBounds);
+            int numPoints = job.points.size();
+            double[] scores = numPoints <= scratchScores.length ? scratchScores : new double[numPoints];
+            java.util.Arrays.fill(scores, 0, numPoints, Double.POSITIVE_INFINITY);
             int best = -1;
             double bestScore = Double.POSITIVE_INFINITY;
             boolean selfHurt = isSelfHurt(job.event.soundId(), Math.sqrt(job.pivot.distanceSquared(eyePoint)));
-            for (int slot = 0; slot < job.points.size(); slot++) {
+            for (int slot = 0; slot < numPoints; slot++) {
                 Point candidate = job.points.get(slot);
                 if (!CaptionReadability.fullyOnScreen(job.slotBounds.get(slot))) continue;
-                double score = CaptionReadability.score(job.slotBounds.get(slot), models, others, viewport,
+                double score = CaptionReadability.score(job.slotBounds.get(slot), models, scratchOtherBounds, viewport,
                         candidate.distanceSquared(job.pivot));
                 var sb = job.slotBounds.get(slot);
                 var zone = crosshairZone.zoneOf(sb);
@@ -281,12 +325,12 @@ public final class DynamicSubtitleLayout {
                     if (selfHurt) {
                         continue;
                     }
-                    score += 150.0;
+                    score += SCORE_PENALTY_CROSSHAIR_CORE;
                 } else if (zone == CrosshairComfortZone.Zone.BUFFER) {
-                    score += selfHurt ? 80.0 : 25.0;
+                    score += selfHurt ? SCORE_PENALTY_CROSSHAIR_BUFFER : SCORE_PENALTY_BUFFER_DEFAULT;
                 }
                 if (weaponMask.intersects(sb)) {
-                    score += 60.0;
+                    score += SCORE_PENALTY_WEAPON_MASK;
                 }
                 score += job.type.slotScoreBonus(slot);
                 if (slot == 1) score += 0.08;
@@ -340,9 +384,12 @@ public final class DynamicSubtitleLayout {
             boolean rain = SoundEventPolicy.isRain(job.event.soundId());
             if (rain && rainCount >= 2) { occupied.remove(job.event.id()); continue; }
             Point previous = state.motion.position();
-            List<BillboardProjection.Bounds> routeObstacles = new ArrayList<>(job.silhouettes);
+            List<BillboardProjection.Bounds> routeObstacles = scratchRouteObstacles;
+            routeObstacles.clear();
+            routeObstacles.addAll(job.silhouettes);
             routeObstacles.add(viewport.reticle());
-            routeObstacles.addAll(otherBounds(occupied, job.event.id()));
+            collectOtherBounds(occupied, job.event.id(), scratchOtherBounds);
+            routeObstacles.addAll(scratchOtherBounds);
             var currentBounds = resolve(job, previous, context, state.repulsion)
                     .project(eyePoint, camera.orientation, projection);
             int nextSlot = CaptionRoute.nextSlot(currentBounds, job.slotBounds, state.slot, routeObstacles);
@@ -370,8 +417,9 @@ public final class DynamicSubtitleLayout {
                 continue;
             }
             var rectangle = transform.project(eyePoint, camera.orientation, projection);
+            collectOtherBounds(occupied, job.event.id(), scratchOtherBounds);
             if (CaptionReadability.needsEscape(rectangle, viewport)
-                    || CaptionReadability.score(rectangle, models, otherBounds(occupied, job.event.id()), viewport, 0) > 8) {
+                    || CaptionReadability.score(rectangle, models, scratchOtherBounds, viewport, 0) > 8) {
                 state.lastSolve = Math.min(state.lastSolve, now - LayoutScheduler.INTERVAL_NANOS);
             }
             if (!CaptionReadability.fullyOnScreen(rectangle)) { occupied.remove(job.event.id()); continue; }
@@ -382,6 +430,11 @@ public final class DynamicSubtitleLayout {
             if (result.size() == limit) break;
         }
         lastWork = budget.counts();
+        scratchOtherBounds.clear();
+        scratchRouteObstacles.clear();
+        scratchEligible.clear();
+        scratchPreparation.clear();
+        scratchLiveIds.clear();
         return List.copyOf(result);
         }
     }
@@ -556,9 +609,14 @@ public final class DynamicSubtitleLayout {
                 Math.max(reserved.maxX(), actual.maxX()), Math.max(reserved.maxY(), actual.maxY()));
     }
 
-    private static List<BillboardProjection.Bounds> otherBounds(Map<Long, BillboardProjection.Bounds> occupied, long self) {
-        return occupied.entrySet().stream().filter(entry -> entry.getKey() != self && entry.getValue() != null)
-                .map(Map.Entry::getValue).toList();
+    private static void collectOtherBounds(Map<Long, BillboardProjection.Bounds> occupied, long self,
+                                           List<BillboardProjection.Bounds> destination) {
+        destination.clear();
+        for (var entry : occupied.entrySet()) {
+            if (entry.getKey() != self && entry.getValue() != null) {
+                destination.add(entry.getValue());
+            }
+        }
     }
 
     private static BillboardProjection.Bounds project(Point point, Size size, float scale, CameraRenderState camera, Matrix4f projection) {

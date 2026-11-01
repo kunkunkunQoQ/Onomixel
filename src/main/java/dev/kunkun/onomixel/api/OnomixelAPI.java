@@ -5,7 +5,6 @@ import dev.kunkun.onomixel.custom.DisplayStrategy;
 import dev.kunkun.onomixel.custom.SoundCustomizationManager;
 import dev.kunkun.onomixel.sound.SoundDefinition;
 import dev.kunkun.onomixel.sound.SoundDefinitions;
-import dev.kunkun.onomixel.subtitle.VisualColor;
 import dev.kunkun.onomixel.subtitle.VisualType;
 import dev.kunkun.onomixel.subtitle.VisualTypeRegistry;
 

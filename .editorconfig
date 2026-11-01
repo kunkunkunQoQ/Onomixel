@@ -13,3 +13,8 @@ indent_size = 2
 
 [*.{ps1,bat,cmd}]
 end_of_line = crlf
+
+[docs/design/original-v2.0-2026-10-29.md]
+end_of_line = crlf
+trim_trailing_whitespace = false
+insert_final_newline = false

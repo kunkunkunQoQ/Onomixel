@@ -35,6 +35,11 @@ public final class OnomixelConfig {
             .translation("onomixel.config.spatialWords").define("spatialWords", true);
     public static final ModConfigSpec.BooleanValue THREAT_RADAR = BUILDER
             .translation("onomixel.config.threatRadar").define("threatRadar", true);
+    /**
+     * @deprecated Per DEC-07, prefix altitude badges have been superseded by 3D world projection
+     *             and 2D radar altitude arrows. Preserved solely for backward compatibility.
+     */
+    @Deprecated
     public static final ModConfigSpec.BooleanValue ALTITUDE_BADGES = BUILDER
             .translation("onomixel.config.altitudeBadges").define("altitudeBadges", false);
     public static final ModConfigSpec.BooleanValue KINETIC_TYPOGRAPHY = BUILDER

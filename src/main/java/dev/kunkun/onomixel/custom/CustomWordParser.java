@@ -16,6 +16,7 @@ import java.util.regex.PatternSyntaxException;
  * Zero Minecraft runtime dependencies for pure JVM testability.
  */
 public final class CustomWordParser {
+    private static final System.Logger LOGGER = System.getLogger(CustomWordParser.class.getName());
 
     private CustomWordParser() {}
 
@@ -44,9 +45,13 @@ public final class CustomWordParser {
             for (JsonElement element : array) {
                 if (!element.isJsonObject()) continue;
                 JsonObject obj = element.getAsJsonObject();
-                CustomWordRule rule = parseSingleRule(obj, basePriority);
-                if (rule != null) {
-                    rules.add(rule);
+                try {
+                    CustomWordRule rule = parseSingleRule(obj, basePriority);
+                    if (rule != null) {
+                        rules.add(rule);
+                    }
+                } catch (Exception e) {
+                    LOGGER.log(System.Logger.Level.WARNING, "Skipping malformed custom onomatopoeia rule: {0} ({1})", obj, e.getMessage());
                 }
             }
             return List.copyOf(rules);

@@ -54,6 +54,24 @@ public final class FirstPersonWeaponMask {
         SHIELD_BLOCKING
     }
 
+    /**
+     * Bounding box defining the first-person hand/weapon occlusion zone.
+     * <p>
+     * <b>Coordinate System:</b> Depends on the configured {@link CoordinateSpace}:
+     * <ul>
+     *   <li>{@link CoordinateSpace#NDC}: Coordinates in Normalized Device Coordinates [-1.0, 1.0],
+     *       where (-1, -1) is bottom-left, (1, 1) is top-right, and (0, 0) is screen center.</li>
+     *   <li>{@link CoordinateSpace#SCREEN_PIXELS}: Coordinates in Minecraft UI scaled pixels [0, width] x [0, height],
+     *       where (0, 0) is top-left and (width, height) is bottom-right.</li>
+     *   <li>{@link CoordinateSpace#NORMALIZED_SCREEN}: Coordinates in normalized screen space [0.0, 1.0],
+     *       where (0, 0) is top-left and (1, 1) is bottom-right.</li>
+     * </ul>
+     *
+     * @param minX Minimum horizontal coordinate along the X-axis (left boundary)
+     * @param minY Minimum vertical coordinate along the Y-axis (top boundary in pixels, bottom in NDC)
+     * @param maxX Maximum horizontal coordinate along the X-axis (right boundary)
+     * @param maxY Maximum vertical coordinate along the Y-axis (bottom boundary in pixels, top in NDC)
+     */
     public record MaskBounds(double minX, double minY, double maxX, double maxY) {
         public MaskBounds {
             if (!Double.isFinite(minX) || !Double.isFinite(minY)
