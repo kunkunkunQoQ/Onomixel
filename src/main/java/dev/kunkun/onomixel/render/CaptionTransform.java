@@ -33,26 +33,40 @@ public record CaptionTransform(Point point, CaptionVisuals.Effect effect, float 
     }
 
     public Vector3f cornerOffset(int corner, Quaternionfc camera) {
-        return BillboardProjection.cornerOffset(corner, halfWidth, halfHeight, scaleX(), scaleY(), orientation(camera));
+        GeometrySlotRing ring = GeometrySlotRing.current();
+        try (var scope = ring.open()) {
+            Quaternionf q = ring.quat();
+            orientation(camera, q);
+            return BillboardProjection.cornerOffset(corner, halfWidth, halfHeight, scaleX(), scaleY(), q);
+        }
     }
 
     public Vector3f cornerOffset(int corner, Quaternionfc camera, Vector3f dest) {
         GeometrySlotRing ring = GeometrySlotRing.current();
-        Quaternionf q = ring.quat();
-        orientation(camera, q);
-        return BillboardProjection.cornerOffset(corner, halfWidth, halfHeight, scaleX(), scaleY(), q, dest);
+        try (var scope = ring.open()) {
+            Quaternionf q = ring.quat();
+            orientation(camera, q);
+            return BillboardProjection.cornerOffset(corner, halfWidth, halfHeight, scaleX(), scaleY(), q, dest);
+        }
     }
 
     public BillboardProjection.Bounds project(Point eye, Quaternionfc camera, Matrix4fc projection) {
-        return BillboardProjection.project(point.x() - eye.x(), point.y() - eye.y(), point.z() - eye.z(),
-                halfWidth, halfHeight, scaleX(), scaleY(), orientation(camera), projection);
+        GeometrySlotRing ring = GeometrySlotRing.current();
+        try (var scope = ring.open()) {
+            Quaternionf q = ring.quat();
+            orientation(camera, q);
+            return BillboardProjection.project(point.x() - eye.x(), point.y() - eye.y(), point.z() - eye.z(),
+                    halfWidth, halfHeight, scaleX(), scaleY(), q, projection);
+        }
     }
 
     public boolean project(Point eye, Quaternionfc camera, Matrix4fc projection, GeometrySlotRing.MutableBounds dest) {
         GeometrySlotRing ring = GeometrySlotRing.current();
-        Quaternionf q = ring.quat();
-        orientation(camera, q);
-        return ring.projectBillboard(point.x() - eye.x(), point.y() - eye.y(), point.z() - eye.z(),
-                halfWidth, halfHeight, scaleX(), scaleY(), q, projection, dest);
+        try (var scope = ring.open()) {
+            Quaternionf q = ring.quat();
+            orientation(camera, q);
+            return ring.projectBillboard(point.x() - eye.x(), point.y() - eye.y(), point.z() - eye.z(),
+                    halfWidth, halfHeight, scaleX(), scaleY(), q, projection, dest);
+        }
     }
 }

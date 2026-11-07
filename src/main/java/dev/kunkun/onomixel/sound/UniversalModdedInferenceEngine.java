@@ -88,8 +88,12 @@ public final class UniversalModdedInferenceEngine {
             throw new IllegalArgumentException("soundId cannot be null or blank");
         }
 
-        if (CACHE.size() >= MAX_CACHE_SIZE) {
-            CACHE.clear();
+        if (CACHE.size() >= MAX_CACHE_SIZE && !CACHE.containsKey(soundId)) {
+            var it = CACHE.keySet().iterator();
+            for (int evicted = 0; evicted < 512 && it.hasNext(); evicted++) {
+                it.next();
+                it.remove();
+            }
         }
 
         return CACHE.computeIfAbsent(soundId, UniversalModdedInferenceEngine::computeInference);

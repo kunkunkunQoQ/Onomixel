@@ -26,7 +26,12 @@ public final class LayoutBudget {
 
     /** Input already carries semantic priority/fairness; keep drawn captions and rotate a spare share. */
     public Set<Long> shortlist(List<Candidate> candidates, int displayLimit, long frame) {
-        Set<Long> selected = new LinkedHashSet<>();
+        int cap = Math.min(candidates.size(), preparationLimit);
+        Set<Long> selected = LinkedHashSet.newLinkedHashSet(cap);
+        if (candidates.size() <= preparationLimit) {
+            for (Candidate candidate : candidates) selected.add(candidate.id());
+            return selected;
+        }
         int preferred = Math.min(displayLimit, preparationLimit - 2);
         for (Candidate candidate : candidates) {
             if (selected.size() >= preferred) break;
@@ -36,7 +41,7 @@ public final class LayoutBudget {
             if (selected.size() >= preparationLimit - 1) break;
             if (candidate.previouslyDrawn()) selected.add(candidate.id());
         }
-        List<Candidate> rest = new ArrayList<>();
+        List<Candidate> rest = new ArrayList<>(candidates.size() - selected.size());
         for (Candidate candidate : candidates) if (!selected.contains(candidate.id())) rest.add(candidate);
         if (!rest.isEmpty()) {
             int start = (int) Math.floorMod(frame, (long) rest.size());

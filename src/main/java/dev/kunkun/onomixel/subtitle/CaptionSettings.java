@@ -53,11 +53,15 @@ public record CaptionSettings(boolean enabled, DisplayMode mode, ColorStyle styl
         }
     }
 
+    private static final Durations DEFAULT_DURATIONS = new Durations(0.5, 0.7, 0.9, 1, 1.1, 0.85, 0.8);
+    private static final CaptionSettings DEFAULTS = new CaptionSettings(
+            true, DisplayMode.LIGHTWEIGHT, ColorStyle.VIBRANT, 24, 12,
+            1_000_000_000L, 1, 0.9, true, true, DEFAULT_DURATIONS,
+            true, true, true, true, true, AestheticStyle.SHONEN, ColorblindMode.OFF
+    );
+
     public static CaptionSettings defaults() {
-        return new CaptionSettings(true, DisplayMode.LIGHTWEIGHT, ColorStyle.VIBRANT, 24, 12,
-                1_000_000_000L, 1, 0.9, true, true,
-                new Durations(0.5, 0.7, 0.9, 1, 1.1, 0.85, 0.8),
-                true, true, true, true, true, AestheticStyle.SHONEN, ColorblindMode.OFF);
+        return DEFAULTS;
     }
 
     public long duration(SoundSemantics semantics) {

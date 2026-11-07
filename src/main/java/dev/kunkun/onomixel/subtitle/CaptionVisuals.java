@@ -1,5 +1,7 @@
 package dev.kunkun.onomixel.subtitle;
 
+import dev.kunkun.onomixel.custom.CustomWordRule;
+import dev.kunkun.onomixel.custom.SoundCustomizationManager;
 import dev.kunkun.onomixel.sound.SoundSemantics;
 import dev.kunkun.onomixel.sound.SoundDefinitions;
 
@@ -234,6 +236,12 @@ public final class CaptionVisuals {
             // Broken third-party samplers are treated as neutral motion for this frame.
         }
         Effect bounded = type.bound(effect);
+        if (soundId != null) {
+            CustomWordRule customRule = SoundCustomizationManager.resolve(soundId);
+            if (customRule != null) {
+                bounded = applyCustomRuleEffect(bounded, customRule, ageSeconds, style);
+            }
+        }
         if (aestheticStyle == AestheticStyle.SHONEN && colorblindMode == ColorblindMode.OFF) {
             return bounded;
         }
@@ -241,6 +249,44 @@ public final class CaptionVisuals {
         int accessibleRgb = applyColorblindFilter(styled.rgb(), colorblindMode);
         return new Effect(styled.scale(), styled.tiltDegrees(), styled.side(), styled.rise(),
                 accessibleRgb, styled.stretchX(), styled.stretchY());
+    }
+
+    private static Effect applyCustomRuleEffect(Effect base, CustomWordRule rule, double ageSeconds, ColorStyle style) {
+        int rgb = base.rgb();
+        if (style == ColorStyle.PASTEL && rule.pastelColor() != null) {
+            rgb = rule.pastelColor();
+        } else if (rule.vibrantColor() != null) {
+            rgb = rule.vibrantColor();
+        } else if (rule.pastelColor() != null) {
+            rgb = rule.pastelColor();
+        }
+        float scale = base.scale();
+        float tilt = base.tiltDegrees();
+        double side = base.side();
+        double rise = base.rise();
+        float stretchX = base.stretchX();
+        float stretchY = base.stretchY();
+
+        String km = rule.kineticMotion();
+        if (km != null) {
+            double age = Math.max(0.0, Double.isFinite(ageSeconds) ? ageSeconds : 0.0);
+            if ("FLOAT".equalsIgnoreCase(km)) {
+                rise -= Math.sin(age * Math.PI * 2.0) * 0.15;
+            } else if ("SHAKE".equalsIgnoreCase(km)) {
+                float shake = (float) (Math.sin(age * 50.0) * 5.0);
+                tilt += shake;
+                side += shake * 0.04;
+            } else if ("POP".equalsIgnoreCase(km) || "STARBURST".equalsIgnoreCase(km)) {
+                float popScale = (float) Math.max(1.0, 1.6 - age * 2.5);
+                scale *= popScale;
+                stretchX *= popScale;
+                stretchY *= popScale;
+            } else if ("PIERCE".equalsIgnoreCase(km)) {
+                stretchX *= 1.25F;
+                stretchY *= 0.85F;
+            }
+        }
+        return new Effect(scale, tilt, side, rise, rgb, stretchX, stretchY).sanitized();
     }
 
     public static Effect applyAestheticStyle(Effect effect, AestheticStyle style) {
@@ -302,18 +348,30 @@ public final class CaptionVisuals {
         };
     }
 
-    /** Formats altitude indicators (removed per user decision, returns clean text). */
+    /**
+     * Formats altitude indicators (removed per user decision DEC-07, returns clean text).
+     * @deprecated Superseded by 3D world projection and 2D radar altitude chevrons.
+     */
+    @Deprecated
     public static String formatAltitudeBadge(String text, double soundY, double camY) {
         return text != null ? text : "";
     }
 
-    /** Formats text with brackets to convey acoustic occlusion behind walls. */
+    /**
+     * Formats text with brackets to convey acoustic occlusion behind walls.
+     * @deprecated Superseded by DEC-07 normal world depth occlusion.
+     */
+    @Deprecated
     public static String formatMuffled(String text) {
         if (text == null) return "";
         return "[ " + text + " ]";
     }
 
-    /** Desaturates and lowers luminance to represent acoustic muffling through solid blocks. */
+    /**
+     * Desaturates and lowers luminance to represent acoustic muffling through solid blocks.
+     * @deprecated Superseded by DEC-07 normal world depth occlusion.
+     */
+    @Deprecated
     public static int muffledColor(int rgb) {
         int r = (rgb >> 16) & 0xFF;
         int g = (rgb >> 8) & 0xFF;

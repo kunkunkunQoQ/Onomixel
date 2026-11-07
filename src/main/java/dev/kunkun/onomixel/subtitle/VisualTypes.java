@@ -22,10 +22,10 @@ public final class VisualTypes {
             double age = Math.max(0, ageSeconds);
             double trigger = Math.max(0, sinceTriggerSeconds);
             double sign = (seed & 1) == 0 ? 1 : -1;
-            double pop = Math.exp(-age * 12) * Math.sin(age * 24);
-            double start = Math.exp(-age * 24);
+            double pop = Math.exp(-age * 16) * Math.sin(age * 36);
+            double start = Math.exp(-age * 40);
             double beat = age > 0.30 ? 0.10 * Math.exp(-trigger * 15) * Math.sin(trigger * 28) : 0;
-            float scale = (float) (1 + 0.55 * pop - 0.28 * start + beat);
+            float scale = (float) (1 + 0.55 * pop - 0.12 * start + beat);
             float tilt = (float) (sign * 6 * Math.exp(-age * 10));
             float stretchX = (float) (1.0 + 0.10 * pop + 0.035 * beat);
             float stretchY = (float) (1.0 - 0.06 * pop - 0.02 * beat);
@@ -49,10 +49,10 @@ public final class VisualTypes {
             double age = Math.max(0, ageSeconds);
             double trigger = Math.max(0, sinceTriggerSeconds);
             double sign = (seed & 1) == 0 ? 1 : -1;
-            double pop = Math.exp(-age * 9) * Math.sin(age * 20);
-            double start = Math.exp(-age * 20);
+            double pop = Math.exp(-age * 13) * Math.sin(age * 30);
+            double start = Math.exp(-age * 36);
             double beat = age > 0.30 ? 0.14 * Math.exp(-trigger * 12) * Math.sin(trigger * 24) : 0;
-            float scale = (float) (1 + 0.85 * pop - 0.35 * start + beat);
+            float scale = (float) (1 + 0.85 * pop - 0.15 * start + beat);
             float tilt = (float) (sign * (9.0 * Math.exp(-age * 6) + 1.6 * Math.sin(trigger * 7) * Math.exp(-trigger * 2)));
             float stretchX = (float) (1.0 + 0.12 * pop + 0.04 * beat);
             float stretchY = (float) (1.0 - 0.07 * pop - 0.025 * beat);

@@ -384,9 +384,19 @@ public final class BossChoreographyDirector {
 
     // ==================== Identification Helpers ====================
 
+    private static String normalizeLower(String soundId) {
+        for (int i = 0; i < soundId.length(); i++) {
+            char c = soundId.charAt(i);
+            if (c >= 'A' && c <= 'Z') {
+                return soundId.toLowerCase(Locale.ROOT);
+            }
+        }
+        return soundId;
+    }
+
     public static BossType identifyBoss(String soundId) {
-        if (soundId == null) return null;
-        String id = soundId.toLowerCase(Locale.ROOT);
+        if (soundId == null || soundId.isEmpty()) return null;
+        String id = normalizeLower(soundId);
         if (id.contains("warden")) return BossType.WARDEN;
         if (id.contains("ender_dragon") || id.contains("dragon")) return BossType.ENDER_DRAGON;
         if (id.contains("wither")) return BossType.WITHER;
@@ -407,8 +417,8 @@ public final class BossChoreographyDirector {
     }
 
     public static BossStage identifyStage(BossType type, String soundId) {
-        if (type == null || soundId == null) return null;
-        String id = soundId.toLowerCase(Locale.ROOT);
+        if (type == null || soundId == null || soundId.isEmpty()) return null;
+        String id = normalizeLower(soundId);
 
         return switch (type) {
             case WARDEN -> {

@@ -79,6 +79,9 @@ public final class SoundEmissionThrottle {
                 return checkCell(id, x, y, z, 2.0, 350_000_000L, now);
             }
             if (isIdleVoice) {
+                if (isChorusHordeMob(id)) {
+                    return checkCell("voice:" + id, x, y, z, 0.75, 450_000_000L, now);
+                }
                 // Mob ambient voices in pens/caves throttled to 2.0s per 4.0m cell
                 return checkCell("voice:" + id, x, y, z, 4.0, 2_000_000_000L, now);
             }
@@ -109,7 +112,12 @@ public final class SoundEmissionThrottle {
                 return checkCell(id, x, y, z, 2.5, 800_000_000L, now);
             }
             if (isLanding) return checkCell(id, x, y, z, 1.5, 200_000_000L, now);
-            if (isIdleVoice) return checkCell("voice:" + id, x, y, z, 2.5, 1_000_000_000L, now);
+            if (isIdleVoice) {
+                if (isChorusHordeMob(id)) {
+                    return checkCell("voice:" + id, x, y, z, 0.75, 350_000_000L, now);
+                }
+                return checkCell("voice:" + id, x, y, z, 2.5, 1_000_000_000L, now);
+            }
             if (isRain) {
                 if (now - lastRain < 2_000_000_000L) return false;
                 if (!checkCell("rain", x, y, z, 5.0, 2_000_000_000L, now)) return false;
@@ -195,5 +203,11 @@ public final class SoundEmissionThrottle {
 
     public int size() {
         return recent.size() + recentSteps.size();
+    }
+
+    private static boolean isChorusHordeMob(String id) {
+        return id.contains("zombie") || id.contains("husk") || id.contains("drowned")
+                || id.contains("zombified") || id.contains("spider") || id.contains("silverfish")
+                || id.contains("endermite") || id.contains("skeleton") || id.contains("pillager");
     }
 }

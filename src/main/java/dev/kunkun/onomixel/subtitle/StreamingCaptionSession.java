@@ -50,6 +50,9 @@ public final class StreamingCaptionSession {
         for (StreamingCaptionSession s : map.values()) {
             if (s.isActive()) return s;
         }
+        for (StreamingCaptionSession s : map.values()) {
+            if (s.isFadingOut()) return s;
+        }
         return map.values().iterator().hasNext() ? map.values().iterator().next() : null;
     }
 
@@ -120,6 +123,7 @@ public final class StreamingCaptionSession {
     private final String soundId;
     private final String translationKey;
     private final WeakReference<SoundSourceHandle> soundHandleRef;
+    private volatile java.util.function.BooleanSupplier livePlayingCheck;
     private volatile PositionSupplier positionSupplier;
     private volatile CaptionPlacement.Point lastKnownPosition;
 
@@ -159,6 +163,29 @@ public final class StreamingCaptionSession {
 
     public void setPositionSupplier(PositionSupplier supplier) {
         this.positionSupplier = supplier;
+    }
+
+    public void setLivePlayingCheck(java.util.function.BooleanSupplier check) {
+        this.livePlayingCheck = check;
+    }
+
+    /**
+     * Polls the bound live audio engine check (if any) to renew heartbeat while the channel is playing
+     * or trigger the smooth exit gate immediately when playback ends.
+     */
+    public void pollLiveHeartbeat(long nowNanos) {
+        var check = livePlayingCheck;
+        if (check != null && state != SessionState.TERMINATED) {
+            try {
+                if (check.getAsBoolean()) {
+                    heartbeat(nowNanos);
+                } else if (state == SessionState.STARTING || state == SessionState.STREAMING) {
+                    stop(nowNanos);
+                }
+            } catch (Throwable ignored) {
+                // Ignore audio engine check failures gracefully
+            }
+        }
     }
 
     public void updatePosition(double x, double y, double z) {

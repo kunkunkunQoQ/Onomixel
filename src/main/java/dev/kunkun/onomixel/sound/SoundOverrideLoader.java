@@ -112,10 +112,9 @@ public final class SoundOverrideLoader {
     public static int reloadAll() {
         ResourceManager manager = null;
         try {
-            Class<?> mcClass = Class.forName("net.minecraft.client.Minecraft");
-            Object mc = mcClass.getMethod("getInstance").invoke(null);
+            net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
             if (mc != null) {
-                manager = (ResourceManager) mcClass.getMethod("getResourceManager").invoke(mc);
+                manager = mc.getResourceManager();
             }
         } catch (Throwable ignored) {
             // Headless or test environment fallback

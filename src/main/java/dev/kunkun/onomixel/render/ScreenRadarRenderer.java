@@ -62,6 +62,10 @@ public final class ScreenRadarRenderer {
     private final int[] halfWidths = new int[MAX_DISPLAYED];
     private final int[] halfHeights = new int[MAX_DISPLAYED];
     private final ThreatRadarCalculator.EdgeTarget[] targets = new ThreatRadarCalculator.EdgeTarget[MAX_DISPLAYED];
+    private final String[] cachedSoundIds = new String[MAX_DISPLAYED];
+    private final int[] cachedTenths = new int[MAX_DISPLAYED];
+    private final boolean[] cachedCriticals = new boolean[MAX_DISPLAYED];
+    private net.minecraft.locale.Language cachedLanguage;
 
     // Reusable list to interface with ScreenRadarLayout without per-frame ArrayList allocations
     private final List<ScreenRadarLayout.InputCandidate> reusableLayoutInputs = new ArrayList<>(MAX_DISPLAYED);
@@ -131,7 +135,7 @@ public final class ScreenRadarRenderer {
 
         int candidateCount = 0;
 
-        for (SubtitlePool.Subtitle eventItem : pool.snapshot()) {
+        for (SubtitlePool.Subtitle eventItem : pool.activeView()) {
             long radarExpires = eventItem.radarExpiresNanos();
             if (radarExpires <= 0) {
                 radarExpires = eventItem.triggeredNanos() + ThreatRegistry.radarDurationNanos(eventItem.soundId());
@@ -186,6 +190,11 @@ public final class ScreenRadarRenderer {
         // Select up to MAX_DISPLAYED highest-priority off-screen candidates
         int count = Math.min(MAX_DISPLAYED, candidateCount);
         reusableLayoutInputs.clear();
+        var currentLanguage = net.minecraft.locale.Language.getInstance();
+        if (currentLanguage != cachedLanguage) {
+            cachedLanguage = currentLanguage;
+            java.util.Arrays.fill(cachedSoundIds, null);
+        }
 
         for (int i = 0; i < count; i++) {
             CandidateSlot candidate = candidatePool[i];
@@ -193,10 +202,24 @@ public final class ScreenRadarRenderer {
             targetSlot.set(candidate.soundId, candidate.soundX, candidate.soundY, candidate.soundZ,
                     candidate.isCritical, candidate.distance, candidate.maxDistance);
 
-            String distStr = formatDistance(candidate.distance);
-            String threatName = Component.translatable(ThreatRegistry.resolveThreatNameKey(candidate.soundId)).getString();
-            String displayText = (candidate.isCritical ? "⚠ " : "◆ ") + threatName + " " + distStr;
-            int textWidth = font.width(displayText);
+            int tenths = (int) Math.round(candidate.distance * 10.0);
+            String displayText;
+            int textWidth;
+            if (candidate.soundId.equals(cachedSoundIds[i])
+                    && tenths == cachedTenths[i]
+                    && candidate.isCritical == cachedCriticals[i]
+                    && displayTexts[i] != null) {
+                displayText = displayTexts[i];
+                textWidth = textWidths[i];
+            } else {
+                String distStr = formatDistance(candidate.distance);
+                String threatName = Component.translatable(ThreatRegistry.resolveThreatNameKey(candidate.soundId)).getString();
+                displayText = (candidate.isCritical ? "⚠ " : "◆ ") + threatName + " " + distStr;
+                textWidth = font.width(displayText);
+                cachedSoundIds[i] = candidate.soundId;
+                cachedTenths[i] = tenths;
+                cachedCriticals[i] = candidate.isCritical;
+            }
             int halfWidth = textWidth / 2 + 8;
             int halfHeight = 7;
             ThreatRadarCalculator.EdgeTarget target = ThreatRadarCalculator.calculate(

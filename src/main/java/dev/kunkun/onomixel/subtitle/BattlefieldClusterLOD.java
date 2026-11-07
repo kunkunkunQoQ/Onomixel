@@ -572,7 +572,15 @@ public final class BattlefieldClusterLOD {
         List<SoundEntry> entries = new ArrayList<>(subtitles.size());
         for (SubtitlePool.Subtitle sub : subtitles) {
             if (sub != null) {
-                entries.add(SoundEntry.fromSubtitle(sub));
+                SoundEntry base = SoundEntry.fromSubtitle(sub);
+                entries.add(base);
+                int repeats = sub.repeatCount();
+                if (repeats > 1 && categorize(sub.soundId(), sub.semantics()) != ChorusCategory.GENERIC_CHORUS) {
+                    int extra = Math.min(repeats - 1, 15);
+                    for (int r = 0; r < extra; r++) {
+                        entries.add(base);
+                    }
+                }
             }
         }
         return process(entries, promotionThreshold);
@@ -595,9 +603,10 @@ public final class BattlefieldClusterLOD {
             case GENERIC_CHORUS -> SoundSemantics.AMBIENT;
         };
         long duration = 1_500_000_000L;
+        long createdAt = now - 100_000_000L;
         return new SubtitlePool.Subtitle(id, cluster.translationKey(), badgeTitle, "cluster", "chorus",
                 cluster.x(), cluster.y(), cluster.z(), cluster.x(), cluster.y(), cluster.z(),
-                now, now + duration, now + 2 * duration, now, cluster.priority(),
+                createdAt, now + duration, now + 2 * duration, now, cluster.priority(),
                 semantics, cluster.category().name(), false);
     }
 

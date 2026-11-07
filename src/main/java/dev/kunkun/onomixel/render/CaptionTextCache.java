@@ -8,6 +8,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.util.FormattedCharSequence;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,9 +22,9 @@ final class CaptionTextCache {
                 List<GlyphMetric> sourceGlyphs, List<KineticTypography.GlyphInput> kineticInputs,
                 List<GlyphDraw> glyphs, int textHash, float glyphHalfHeight) {
         Text {
-            sourceGlyphs = List.copyOf(sourceGlyphs);
-            kineticInputs = List.copyOf(kineticInputs);
-            glyphs = List.copyOf(glyphs);
+            sourceGlyphs = sourceGlyphs instanceof java.util.RandomAccess ? Collections.unmodifiableList(sourceGlyphs) : List.copyOf(sourceGlyphs);
+            kineticInputs = kineticInputs instanceof java.util.RandomAccess ? Collections.unmodifiableList(kineticInputs) : List.copyOf(kineticInputs);
+            glyphs = glyphs instanceof java.util.RandomAccess ? Collections.unmodifiableList(glyphs) : List.copyOf(glyphs);
         }
     }
     private record Key(String translationKey, boolean bold, boolean italic) {}
@@ -43,13 +44,20 @@ final class CaptionTextCache {
     }
 
     Text get(Minecraft minecraft, String translationKey, boolean bold, boolean italic, String prefix) {
+        return get(minecraft, translationKey, bold, italic, prefix, null);
+    }
+
+    Text get(Minecraft minecraft, String translationKey, boolean bold, boolean italic, String prefix, String suffix) {
         long currentGeneration = generation.get();
         if (cachedGeneration != currentGeneration || language != Language.getInstance()) {
             entries.clear();
             language = Language.getInstance();
             cachedGeneration = currentGeneration;
         }
-        Key key = new Key(prefix != null ? prefix + translationKey : translationKey, bold, italic);
+        String cacheKeyStr = translationKey;
+        if (prefix != null) cacheKeyStr = prefix + cacheKeyStr;
+        if (suffix != null) cacheKeyStr = cacheKeyStr + suffix;
+        Key key = new Key(cacheKeyStr, bold, italic);
         Text cached = entries.get(key);
         if (cached != null) return cached;
         Component baseText = translationKey.startsWith("literal:")
@@ -58,6 +66,9 @@ final class CaptionTextCache {
         Component component = prefix != null
                 ? Component.literal(prefix).append(baseText)
                 : baseText;
+        if (suffix != null && !suffix.isEmpty()) {
+            component = component.copy().append(suffix);
+        }
         if (bold && italic) {
             component = component.copy().withStyle(ChatFormatting.BOLD, ChatFormatting.ITALIC);
         } else if (bold) {

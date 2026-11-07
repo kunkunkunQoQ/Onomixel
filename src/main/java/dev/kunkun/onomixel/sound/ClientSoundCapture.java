@@ -90,6 +90,12 @@ public final class ClientSoundCapture {
         // getVolume/getPitch are random samplers and may require unresolved data. Never call them here.
         mailbox.request(sound, currentLevel, new Request(event.getEngine(), definition,
                 sound.getSource(), sound.getX(), sound.getY(), sound.getZ(), localPlayerShot), requestedAt);
+        SoundSemantics sem = definition.semantics();
+        if (sem == SoundSemantics.BREAK || sem == SoundSemantics.INTERACTION
+                || sem == SoundSemantics.ATTACK || sem == SoundSemantics.DAMAGE
+                || sem == SoundSemantics.PICKUP || sem == SoundSemantics.LANDING) {
+            mailbox.confirm(sound, requestedAt);
+        }
     }
 
     @SubscribeEvent(priority = EventPriority.LOWEST)
@@ -157,33 +163,29 @@ public final class ClientSoundCapture {
 
     public long pump(Minecraft minecraft) {
         CaptionSettings next = OnomixelConfig.snapshot();
-        if (next.mode() != settings.mode()) {
-            subtitles.filterAllowed(next.mode());
-            delayedEmissions.removeIf(pending -> !pending.definition().semantics().allowed(next.mode()));
-            throttle.clear();
+        if (next != settings) {
+            if (next.mode() != settings.mode()) {
+                subtitles.filterAllowed(next.mode());
+                delayedEmissions.removeIf(pending -> !pending.definition().semantics().allowed(next.mode()));
+                throttle.clear();
+            }
+            settings = next;
+            // Legacy extension getters stay current; the runtime path uses the immutable snapshot directly.
+            CaptionVisuals.setActiveStyle(settings.style());
+            CaptionVisuals.setDisplayMode(settings.mode());
+            CaptionVisuals.setActiveAestheticStyle(settings.aestheticStyle());
+            CaptionVisuals.setActiveColorblindMode(settings.colorblindMode());
+            var durations = settings.durations();
+            CaptionVisuals.setDurationScales(durations.step(), durations.pickup(), durations.interaction(),
+                    durations.breaking(), durations.impact(), durations.voice(), durations.ambient());
         }
-        settings = next;
-        // Legacy extension getters stay current; the runtime path uses the immutable snapshot directly.
-        CaptionVisuals.setActiveStyle(settings.style());
-        CaptionVisuals.setDisplayMode(settings.mode());
-        CaptionVisuals.setActiveAestheticStyle(settings.aestheticStyle());
-        CaptionVisuals.setActiveColorblindMode(settings.colorblindMode());
-        var durations = settings.durations();
-        CaptionVisuals.setDurationScales(durations.step(), durations.pickup(), durations.interaction(),
-                durations.breaking(), durations.impact(), durations.voice(), durations.ambient());
         synchronizeWorld(minecraft);
         long wallNow = System.nanoTime();
         long now = clock.sample(wallNow, minecraft.isPaused());
         lastActiveNanos = now;
         boolean active = settings.enabled() && (settings.spatialWords() || settings.threatRadar());
         if (currentLevel == null || !active) {
-            subtitles.clear();
-            mailbox.clear();
-            delayedEmissions.clear();
-            throttle.clear();
-            projectileEvidence.clear();
-            BossChoreographyDirector.getInstance().reset();
-            StreamingCaptionSession.clearAllSessions();
+            lifecycle.resetAllWorldState();
             return now;
         }
         if (minecraft.isPaused()) {
@@ -218,12 +220,28 @@ public final class ClientSoundCapture {
                     && !currentLevel.isRainingAt(BlockPos.containing(minecraft.gameRenderer.mainCamera().position()))) continue;
             if (!throttle.admit(soundId, definition.semantics(), request.x, request.y, request.z, now, settings.mode())) continue;
             long duration = settings.duration(definition.semantics());
+            if (definition.semantics() == SoundSemantics.IDLE_VOICE
+                    && (soundId.contains("zombie") || soundId.contains("husk") || soundId.contains("drowned")
+                        || soundId.contains("zombified") || soundId.contains("spider") || soundId.contains("silverfish"))) {
+                duration = Math.max(duration, 1_650_000_000L);
+            }
             String world = currentLevel.dimension().identifier().toString();
             var existing = subtitles.existing(world, request.category.name(), request.x, request.y, request.z,
                     definition.semantics(), definition.mergeGroup());
             var anchor = existing == null
                     ? SpatialAnchorResolver.initialAnchor(minecraft, definition, request.x, request.y, request.z)
                     : new dev.kunkun.onomixel.subtitle.CaptionPlacement.Point(existing.x(), existing.y(), existing.z());
+
+            CustomWordRule customRule = SoundCustomizationManager.resolve(soundId);
+            if (customRule != null) {
+                if (customRule.durationMultiplier() != null && customRule.durationMultiplier() > 0) {
+                    duration = Math.round(duration * customRule.durationMultiplier());
+                }
+                if (customRule.heightOffset() != null && existing == null) {
+                    anchor = new dev.kunkun.onomixel.subtitle.CaptionPlacement.Point(
+                            anchor.x(), anchor.y() + customRule.heightOffset(), anchor.z());
+                }
+            }
 
             // Speed-of-Sound Delay Buffer
             var camPos = minecraft.gameRenderer.mainCamera().position();
@@ -248,16 +266,6 @@ public final class ClientSoundCapture {
                 }
             }
 
-            CustomWordRule customRule = SoundCustomizationManager.resolve(soundId);
-            if (customRule != null) {
-                if (customRule.durationMultiplier() != null && customRule.durationMultiplier() > 0) {
-                    duration = Math.round(duration * customRule.durationMultiplier());
-                }
-                if (customRule.heightOffset() != null) {
-                    anchor = new dev.kunkun.onomixel.subtitle.CaptionPlacement.Point(
-                            anchor.x(), anchor.y() + customRule.heightOffset(), anchor.z());
-                }
-            }
             String customText = SoundCustomizationManager.resolveDisplayText(customRule, soundId, now);
             String effectiveKey = customText != null ? customText : definition.translationKey();
 
@@ -270,6 +278,8 @@ public final class ClientSoundCapture {
                 BossChoreographyDirector.getInstance().onSoundEvent(soundId, request.x, request.y, request.z, now);
             }
             if (StreamingCaptionSession.isStreamingCandidate(soundId)) {
+                var engRef = new java.lang.ref.WeakReference<>(request.engine);
+                var sndRef = new java.lang.ref.WeakReference<>(confirmation.identity());
                 var session = StreamingCaptionSession.getSessionBySound(soundId);
                 if (session == null || session.isTerminated()) {
                     session = new StreamingCaptionSession(
@@ -280,8 +290,18 @@ public final class ClientSoundCapture {
                             anchor,
                             now
                     );
+                    session.setLivePlayingCheck(() -> {
+                        var eng = engRef.get();
+                        var snd = sndRef.get();
+                        return eng != null && snd != null && eng.isActive(snd);
+                    });
                     StreamingCaptionSession.registerSession(session);
                 } else {
+                    session.setLivePlayingCheck(() -> {
+                        var eng = engRef.get();
+                        var snd = sndRef.get();
+                        return eng != null && snd != null && eng.isActive(snd);
+                    });
                     session.heartbeat(now);
                 }
             }
@@ -289,9 +309,10 @@ public final class ClientSoundCapture {
 
         // Streaming Caption Sessions update & dynamic coordinate tracking
         for (var session : StreamingCaptionSession.activeSessions()) {
+            session.pollLiveHeartbeat(now);
             session.update(now);
-            if (session.isActive()) {
-                if (minecraft.player != null) {
+            if (session.isActive() || session.isFadingOut()) {
+                if (session.isActive() && minecraft.player != null) {
                     if (session.soundId().contains("minecart") && minecraft.player.getVehicle() != null) {
                         var v = minecraft.player.getVehicle();
                         session.updatePosition(v.getX(), v.getY() + 0.5, v.getZ());
@@ -300,13 +321,15 @@ public final class ClientSoundCapture {
                     }
                 }
                 var pos = session.currentPosition(0.0f);
-                subtitles.renewStreaming(session.soundId(), pos.x(), pos.y(), pos.z(), now + 1_000_000_000L);
+                long targetExpiry = session.isFadingOut()
+                        ? session.stoppedAtNanos() + StreamingCaptionSession.FADE_OUT_DURATION_NANOS
+                        : now + 1_000_000_000L;
+                subtitles.renewStreaming(session.soundId(), pos.x(), pos.y(), pos.z(), targetExpiry);
             } else if (session.isTerminated()) {
                 StreamingCaptionSession.removeSession(session.id());
             }
         }
 
-        subtitles.expire(now);
         return now;
     }
 

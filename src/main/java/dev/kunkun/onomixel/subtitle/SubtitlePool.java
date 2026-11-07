@@ -3,6 +3,7 @@ package dev.kunkun.onomixel.subtitle;
 import dev.kunkun.onomixel.sound.SoundSemantics;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 
@@ -26,6 +27,7 @@ public final class SubtitlePool {
     };
 
     private final List<Subtitle> active = new ArrayList<>();
+    private final List<Subtitle> activeView = Collections.unmodifiableList(active);
     private long sequence;
 
     // Zero-GC pooling for candidates(...) per-frame queries
@@ -45,7 +47,18 @@ public final class SubtitlePool {
                            double x, double y, double z, long createdNanos, long expiresNanos,
                            long hardExpiresNanos, long triggeredNanos, int priority,
                            SoundSemantics semantics, String mergeGroup, boolean localPlayerShot,
-                           long radarExpiresNanos) {
+                           long radarExpiresNanos, int repeatCount) {
+        public Subtitle(long id, String soundId, String translationKey, String worldId, String category,
+                        double sourceX, double sourceY, double sourceZ,
+                        double x, double y, double z, long createdNanos, long expiresNanos,
+                        long hardExpiresNanos, long triggeredNanos, int priority,
+                        SoundSemantics semantics, String mergeGroup, boolean localPlayerShot,
+                        long radarExpiresNanos) {
+            this(id, soundId, translationKey, worldId, category, sourceX, sourceY, sourceZ, x, y, z,
+                    createdNanos, expiresNanos, hardExpiresNanos, triggeredNanos, priority,
+                    semantics, mergeGroup, localPlayerShot, radarExpiresNanos, 1);
+        }
+
         public Subtitle(long id, String soundId, String translationKey, String worldId, String category,
                         double sourceX, double sourceY, double sourceZ,
                         double x, double y, double z, long createdNanos, long expiresNanos,
@@ -54,7 +67,7 @@ public final class SubtitlePool {
             this(id, soundId, translationKey, worldId, category, sourceX, sourceY, sourceZ, x, y, z,
                     createdNanos, expiresNanos, hardExpiresNanos, triggeredNanos, priority,
                     semantics, mergeGroup, localPlayerShot,
-                    calcDefaultRadarExpires(soundId, expiresNanos, triggeredNanos));
+                    calcDefaultRadarExpires(soundId, expiresNanos, triggeredNanos), 1);
         }
 
         public Subtitle(long id, String soundId, String translationKey, String worldId, String category,
@@ -97,7 +110,7 @@ public final class SubtitlePool {
         public double alpha(long now, boolean fade) {
             if (now >= expiresNanos) return 0;
             if (!fade) return 1;
-            double fadeIn = (double) (now - createdNanos) / 100_000_000L;
+            double fadeIn = 0.45 + 0.55 * ((double) Math.max(0L, now - createdNanos) / 35_000_000L);
             double fadeOut = (double) (expiresNanos - now) / 250_000_000L;
             return Math.clamp(Math.min(fadeIn, fadeOut), 0.0, 1.0);
         }
@@ -132,11 +145,12 @@ public final class SubtitlePool {
                 || semantics == null || mergeGroup == null) return;
         expire(now);
 
-        // A new high-signal event clears nearby low-signal clutter before it competes for a slot.
+        // A new high-signal event clears nearby low-signal clutter (and block break supersedes block hit).
         if (semantics.importance() >= 6) {
             active.removeIf(previous -> sameSpatialSource(previous, worldId, sourceX, sourceY, sourceZ)
-                    && isLowSignal(previous.semantics)
-                    && semantics.importance() > previous.semantics.importance());
+                    && ((isLowSignal(previous.semantics) && semantics.importance() > previous.semantics.importance())
+                        || (semantics == SoundSemantics.BREAK && previous.semantics == SoundSemantics.INTERACTION
+                            && previous.soundId.startsWith("minecraft:block."))));
         }
 
         for (int i = 0; i < active.size(); i++) {
@@ -150,13 +164,14 @@ public final class SubtitlePool {
                 long refreshedExpires = Math.min(now + duration, previous.hardExpiresNanos);
                 long radarDur = ThreatRegistry.radarDurationNanos(soundId, duration);
                 long refreshedRadarExpires = radarDur > 0 ? now + radarDur : refreshedExpires;
+                int nextRepeats = Math.min(previous.repeatCount + 1, 64);
                 active.set(i, new Subtitle(previous.id, soundId, key, worldId, category,
                         previous.sourceX, previous.sourceY, previous.sourceZ,
                         previous.x, previous.y, previous.z, previous.createdNanos,
                         Math.max(previous.expiresNanos, refreshedExpires), previous.hardExpiresNanos, now,
                         Math.max(previous.priority, priority), semantics, mergeGroup,
                         previous.localPlayerShot && localPlayerShot,
-                        Math.max(previous.radarExpiresNanos, refreshedRadarExpires)));
+                        Math.max(previous.radarExpiresNanos, refreshedRadarExpires), nextRepeats));
                 return;
             }
         }
@@ -293,6 +308,9 @@ public final class SubtitlePool {
     }
 
     public int size() { return active.size(); }
+
+    /** Zero-allocation read-only view for client-thread renderers that do not mutate the pool during iteration. */
+    public List<Subtitle> activeView() { return activeView; }
 
     public List<Subtitle> snapshot() { return List.copyOf(active); }
 

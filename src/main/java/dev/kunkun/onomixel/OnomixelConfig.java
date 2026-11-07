@@ -70,17 +70,70 @@ public final class OnomixelConfig {
             .translation("onomixel.config.ambientDurationScale").defineInRange("ambientDurationScale", 0.80, 0.20, 2.0);
 
     public static final ModConfigSpec SPEC = BUILDER.build();
+    private static volatile CaptionSettings cachedSnapshot;
 
     public static CaptionSettings snapshot() {
         if (!SPEC.isLoaded()) return CaptionSettings.defaults();
-        return new CaptionSettings(ENABLED.get(), DISPLAY_MODE.get(), COLOR_STYLE.get(), MAX_DISTANCE.get(),
-                MAX_VISIBLE.get(), Math.round(DURATION_SECONDS.get() * 1_000_000_000L), TEXT_SCALE.get(),
-                OPACITY.get(), DISTANCE_SCALING.get(), FADE.get(),
-                new CaptionSettings.Durations(STEP_DURATION_SCALE.get(), PICKUP_DURATION_SCALE.get(),
-                        INTERACTION_DURATION_SCALE.get(), BREAK_DURATION_SCALE.get(), IMPACT_DURATION_SCALE.get(),
-                        VOICE_DURATION_SCALE.get(), AMBIENT_DURATION_SCALE.get()),
-                SPATIAL_WORDS.get(), THREAT_RADAR.get(), ALTITUDE_BADGES.get(), KINETIC_TYPOGRAPHY.get(), SPEED_OF_SOUND.get(),
-                AESTHETIC_STYLE.get(), COLORBLIND_MODE.get());
+        boolean enabled = ENABLED.get();
+        DisplayMode mode = DISPLAY_MODE.get();
+        ColorStyle style = COLOR_STYLE.get();
+        int maxDist = MAX_DISTANCE.get();
+        int maxVis = MAX_VISIBLE.get();
+        long durNanos = Math.round(DURATION_SECONDS.get() * 1_000_000_000L);
+        double scale = TEXT_SCALE.get();
+        double opacity = OPACITY.get();
+        boolean distScale = DISTANCE_SCALING.get();
+        boolean fade = FADE.get();
+        double step = STEP_DURATION_SCALE.get();
+        double pickup = PICKUP_DURATION_SCALE.get();
+        double interaction = INTERACTION_DURATION_SCALE.get();
+        double brk = BREAK_DURATION_SCALE.get();
+        double impact = IMPACT_DURATION_SCALE.get();
+        double voice = VOICE_DURATION_SCALE.get();
+        double ambient = AMBIENT_DURATION_SCALE.get();
+        boolean spatialWords = SPATIAL_WORDS.get();
+        boolean threatRadar = THREAT_RADAR.get();
+        boolean altBadges = ALTITUDE_BADGES.get();
+        boolean kinetic = KINETIC_TYPOGRAPHY.get();
+        boolean speedOfSound = SPEED_OF_SOUND.get();
+        var aesthetic = AESTHETIC_STYLE.get();
+        var colorblind = COLORBLIND_MODE.get();
+
+        CaptionSettings prev = cachedSnapshot;
+        if (prev != null
+                && prev.enabled() == enabled
+                && prev.mode() == mode
+                && prev.style() == style
+                && prev.maxDistance() == maxDist
+                && prev.maxVisible() == maxVis
+                && prev.durationNanos() == durNanos
+                && Double.compare(prev.textScale(), scale) == 0
+                && Double.compare(prev.opacity(), opacity) == 0
+                && prev.distanceScaling() == distScale
+                && prev.fade() == fade
+                && prev.spatialWords() == spatialWords
+                && prev.threatRadar() == threatRadar
+                && prev.altitudeBadges() == altBadges
+                && prev.kineticTypography() == kinetic
+                && prev.speedOfSound() == speedOfSound
+                && prev.aestheticStyle() == aesthetic
+                && prev.colorblindMode() == colorblind
+                && Double.compare(prev.durations().step(), step) == 0
+                && Double.compare(prev.durations().pickup(), pickup) == 0
+                && Double.compare(prev.durations().interaction(), interaction) == 0
+                && Double.compare(prev.durations().breaking(), brk) == 0
+                && Double.compare(prev.durations().impact(), impact) == 0
+                && Double.compare(prev.durations().voice(), voice) == 0
+                && Double.compare(prev.durations().ambient(), ambient) == 0) {
+            return prev;
+        }
+
+        CaptionSettings next = new CaptionSettings(enabled, mode, style, maxDist, maxVis, durNanos,
+                scale, opacity, distScale, fade,
+                new CaptionSettings.Durations(step, pickup, interaction, brk, impact, voice, ambient),
+                spatialWords, threatRadar, altBadges, kinetic, speedOfSound, aesthetic, colorblind);
+        cachedSnapshot = next;
+        return next;
     }
 
     public static boolean spatialWords() {

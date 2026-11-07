@@ -1,5 +1,7 @@
 package dev.kunkun.onomixel.subtitle;
 
+import dev.kunkun.onomixel.custom.CustomWordRule;
+import dev.kunkun.onomixel.custom.SoundCustomizationManager;
 import dev.kunkun.onomixel.sound.SoundSemantics;
 
 import java.util.Collection;
@@ -116,6 +118,14 @@ public final class VisualTypeRegistry {
         registerSound("minecraft:ambient.soul_sand_valley.mood", VisualTypes.NETHER_SOUL);
         registerSound("minecraft:ambient.basalt_deltas.mood", VisualTypes.NETHER_ASH);
 
+        // Promoted battlefield macro-LOD chorus categories
+        registerSound("onomixel.chorus.zombie", VisualTypes.VOICE);
+        registerSound("onomixel.chorus.beast", VisualTypes.VOICE);
+        registerSound("onomixel.chorus.arrow_rain", VisualTypes.DAMAGE_PIERCE);
+        registerSound("onomixel.chorus.arthropod", VisualTypes.INTERACTION);
+        registerSound("onomixel.chorus.collapse", VisualTypes.BREAK);
+        registerSound("onomixel.chorus.generic", VisualTypes.AMBIENT);
+
         // Extension rules run before the semantic builtin fallback, never behind a broad builtin rule.
     }
 
@@ -167,12 +177,19 @@ public final class VisualTypeRegistry {
     }
 
     /**
-     * Resolves the color for a sound ID, prioritizing explicit overrides then material-semantic resolution.
+     * Resolves the color for a sound ID, prioritizing explicit overrides, custom wildcard/exact rules,
+     * and then material-semantic resolution.
      */
     public static VisualColor resolveColor(String soundId, VisualType baseType) {
         if (soundId != null) {
             VisualColor explicit = SOUND_COLORS.get(soundId);
             if (explicit != null) return explicit;
+            CustomWordRule customRule = SoundCustomizationManager.resolve(soundId);
+            if (customRule != null && (customRule.vibrantColor() != null || customRule.pastelColor() != null)) {
+                int vibrant = customRule.vibrantColor() != null ? customRule.vibrantColor() : baseType.vibrantColor();
+                int pastel = customRule.pastelColor() != null ? customRule.pastelColor() : vibrant;
+                return new VisualColor(vibrant, pastel);
+            }
         }
         if (soundId == null || !soundId.startsWith("minecraft:") || !isBuiltin(baseType))
             return new VisualColor(baseType.vibrantColor(), baseType.pastelColor());
@@ -199,6 +216,11 @@ public final class VisualTypeRegistry {
      */
     public static VisualType resolve(String soundId) {
         if (soundId == null) return VisualTypes.IMPACT;
+        CustomWordRule customRule = SoundCustomizationManager.resolve(soundId);
+        if (customRule != null && customRule.visualTypeId() != null) {
+            VisualType customVt = TYPES.get(customRule.visualTypeId());
+            if (customVt != null) return customVt;
+        }
         VisualType explicit = SOUND_MAP.get(soundId);
         if (explicit != null) return explicit;
         for (Rule rule : PATTERNS) {

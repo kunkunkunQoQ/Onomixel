@@ -1,6 +1,8 @@
 package dev.kunkun.onomixel.render;
 
 import dev.kunkun.onomixel.OnomixelConfig;
+import dev.kunkun.onomixel.custom.CustomWordRule;
+import dev.kunkun.onomixel.custom.SoundCustomizationManager;
 import dev.kunkun.onomixel.sound.AcousticEnvironmentReactor;
 import dev.kunkun.onomixel.sound.SoundEventPolicy;
 import dev.kunkun.onomixel.sound.SoundSourceProfile;
@@ -53,10 +55,12 @@ public final class DynamicSubtitleLayout {
     private LayoutBudget.Counts lastWork = new LayoutBudget.Counts(0, 0, 0, 0);
     private final List<BillboardProjection.Bounds> scratchOtherBounds = new ArrayList<>(32);
     private final double[] scratchScores = new double[16];
+    private final double[] scratchRawScores = new double[16];
     private final List<BillboardProjection.Bounds> scratchRouteObstacles = new ArrayList<>(32);
     private final Set<Long> scratchLiveIds = new HashSet<>(32);
     private final List<SubtitlePool.Subtitle> scratchEligible = new ArrayList<>(32);
     private final List<LayoutBudget.Candidate> scratchPreparation = new ArrayList<>(32);
+    private final List<BattlefieldClusterLOD.SpotlightZone> scratchSpotlights = new ArrayList<>(8);
 
     public DynamicSubtitleLayout() { this(new CaptionTextCache()); }
     DynamicSubtitleLayout(CaptionTextCache texts) { this.texts = texts; }
@@ -104,7 +108,7 @@ public final class DynamicSubtitleLayout {
     private record Job(SubtitlePool.Subtitle event, State state, Source source, Size size,
                        CaptionTextCache.Text text, VisualType type, CaptionVisuals.Effect effect, Point pivot, List<Point> points,
                        List<BillboardProjection.Bounds> silhouettes, List<BillboardProjection.Bounds> slotBounds,
-                       boolean darkAmbient, float alphaMultiplier) {}
+                       boolean darkAmbient, float alphaMultiplier, boolean hitstopEligible, float extraScale) {}
 
     public void clear() {
         states.clear();
@@ -115,6 +119,7 @@ public final class DynamicSubtitleLayout {
         scratchLiveIds.clear();
         scratchEligible.clear();
         scratchPreparation.clear();
+        scratchSpotlights.clear();
     }
 
     public List<Placed> layout(Minecraft minecraft, SubtitlePool pool, CameraRenderState camera, long now) {
@@ -128,7 +133,7 @@ public final class DynamicSubtitleLayout {
             frame++;
             BossChoreographyDirector.getInstance().cleanExpiredFields(now);
             scratchLiveIds.clear();
-            for (var subtitle : pool.snapshot()) scratchLiveIds.add(subtitle.id());
+            for (var subtitle : pool.activeView()) scratchLiveIds.add(subtitle.id());
             states.keySet().removeIf(id -> (id > 0 && !scratchLiveIds.contains(id)) || (id < 0 && now - states.get(id).lastFrame > 2_000_000_000L));
 
             Vec3 eye = camera.pos;
@@ -161,6 +166,7 @@ public final class DynamicSubtitleLayout {
 
             // Cheap projection uses approximate source bounds, without block shapes or world rays.
             scratchEligible.clear();
+            scratchSpotlights.clear();
             List<SubtitlePool.Subtitle> eligible = scratchEligible;
             boolean raining = level.isRainingAt(BlockPos.containing(eye));
             boolean submerged = !level.getFluidState(BlockPos.containing(eye)).isEmpty();
@@ -174,11 +180,18 @@ public final class DynamicSubtitleLayout {
                 var bounds = projectBox(approximateBody(event), eye, projection);
                 if (bounds == null || !bounds.intersectsScreen()) continue;
                 eligible.add(event);
+                if (BattlefieldClusterLOD.isCriticalThreat(event.soundId())) {
+                    scratchSpotlights.add(new BattlefieldClusterLOD.SpotlightZone(event.x(), event.y(), event.z(), event.soundId()));
+                }
             }
 
             // Battlefield clustering & Macro-LOD pass:
             List<SubtitlePool.Subtitle> candidatesForLayout = eligible;
-            if (eligible.size() >= BattlefieldClusterLOD.DEFAULT_PROMOTION_THRESHOLD) {
+            int totalChorusWeight = 0;
+            for (int i = 0; i < eligible.size(); i++) {
+                totalChorusWeight += eligible.get(i).repeatCount();
+            }
+            if (totalChorusWeight >= BattlefieldClusterLOD.DEFAULT_PROMOTION_THRESHOLD) {
                 var battlefield = BattlefieldClusterLOD.processSubtitles(eligible);
                 if (battlefield.hasClusters()) {
                     candidatesForLayout = new ArrayList<>();
@@ -225,7 +238,17 @@ public final class DynamicSubtitleLayout {
             }
             var effect = CaptionVisuals.sample(type, event.soundId(), age, trigger, event.id(), settings.style(),
                     settings.aestheticStyle(), settings.colorblindMode());
-            var text = texts.get(minecraft, event.translationKey(), type.isBold(), type.isItalic());
+            CustomWordRule customRule = SoundCustomizationManager.resolve(event.soundId());
+            boolean isBold = customRule != null && customRule.bold() != null ? customRule.bold() : type.isBold();
+            boolean isItalic = customRule != null && customRule.italic() != null ? customRule.italic() : type.isItalic();
+            CaptionTextCache.Text text;
+            if (event.soundId().startsWith("onomixel.chorus.")) {
+                int badgeIdx = event.translationKey().lastIndexOf(" ×");
+                String suffix = badgeIdx >= 0 ? event.translationKey().substring(badgeIdx) : null;
+                text = texts.get(minecraft, event.soundId(), isBold, isItalic, null, suffix);
+            } else {
+                text = texts.get(minecraft, event.translationKey(), isBold, isItalic);
+            }
             text = texts.animate(text, settings.kineticTypography()
                     ? KineticTypography.resolveMode(type.id(), event.soundId()) : KineticTypography.Mode.NONE, age);
             Size size = new Size(text.halfWidth() + 2, text.halfHeight() + 2);
@@ -253,7 +276,26 @@ public final class DynamicSubtitleLayout {
             boolean useContact = block && contactDot > 0.15;
             if (useContact) pivot = contact;
             boolean selfHurt = isSelfHurt(event.soundId(), distance);
-            float reservedScale = scale(distance, settings, selfHurt);
+            boolean hitstopEligible = MangaHitstopEffect.isEligible(event.soundId(), event.semantics());
+            float extraScale = (customRule != null && customRule.scaleMultiplier() != null) ? customRule.scaleMultiplier() : 1.0f;
+            if (BossChoreographyDirector.isBossSound(event.soundId())) {
+                var bossType = BossChoreographyDirector.identifyBoss(event.soundId());
+                var stage = BossChoreographyDirector.identifyStage(bossType, event.soundId());
+                if (stage != null) {
+                    extraScale *= stage.visualScale();
+                }
+            }
+            var streamingSession = StreamingCaptionSession.getSessionBySound(event.soundId());
+            float streamingAlpha = 1.0f;
+            if (streamingSession != null && (streamingSession.isActive() || streamingSession.isFadingOut())) {
+                extraScale *= streamingSession.breathingScale(now);
+                streamingAlpha = streamingSession.alpha(now);
+            }
+            float spotlightAlpha = scratchSpotlights.isEmpty()
+                    ? 1.0f
+                    : BattlefieldClusterLOD.evaluateSpotlightAlpha(event.x(), event.y(), event.z(), event.soundId(), scratchSpotlights, 1.0f);
+            float totalAlphaMultiplier = bossPrivilege.alphaMultiplier() * spotlightAlpha * streamingAlpha;
+            float reservedScale = scale(distance, settings, selfHurt) * extraScale;
             double above = Math.max(0.12, source.body.maxY - pivot.y()) + reserve.halfHeight * reservedScale + 0.16 + envelope.maxRise();
             double below = Math.max(0.12, pivot.y() - source.body.minY) + reserve.halfHeight * reservedScale + 0.16 + envelope.maxRise();
             double push = block ? (useContact ? 0.16 : extent(source.body, toward) + 0.12) : 0.14;
@@ -272,12 +314,13 @@ public final class DynamicSubtitleLayout {
             }
             List<BillboardProjection.Bounds> slots = new ArrayList<>();
             for (Point candidate : points) {
-                var transform = resolve(event, size, effect, candidate, darkAmbient, context, 0);
+                var transform = resolve(event, size, effect, candidate, darkAmbient, context,
+                        CaptionRepulsion.RepulsionOffset.ZERO, hitstopEligible, extraScale);
                 slots.add(enclose(project(transform.point(), reserve, transform.baseScale(), camera, projection),
                         transform.project(eyePoint, camera.orientation, projection)));
             }
             jobs.add(new Job(event, state, source, size, text, type, effect, pivot,
-                    points, silhouettes, slots, darkAmbient, bossPrivilege.alphaMultiplier()));
+                    points, silhouettes, slots, darkAmbient, totalAlphaMultiplier, hitstopEligible, extraScale));
             models.addAll(silhouettes);
         }
 
@@ -310,7 +353,9 @@ public final class DynamicSubtitleLayout {
             collectOtherBounds(occupied, job.event.id(), scratchOtherBounds);
             int numPoints = job.points.size();
             double[] scores = numPoints <= scratchScores.length ? scratchScores : new double[numPoints];
+            double[] rawScores = numPoints <= scratchRawScores.length ? scratchRawScores : new double[numPoints];
             java.util.Arrays.fill(scores, 0, numPoints, Double.POSITIVE_INFINITY);
+            java.util.Arrays.fill(rawScores, 0, numPoints, Double.POSITIVE_INFINITY);
             int best = -1;
             double bestScore = Double.POSITIVE_INFINITY;
             boolean selfHurt = isSelfHurt(job.event.soundId(), Math.sqrt(job.pivot.distanceSquared(eyePoint)));
@@ -340,13 +385,41 @@ public final class DynamicSubtitleLayout {
                 } else if (deltaY <= -2.5 && slot == 5) {
                     score -= 0.15;
                 }
-                if (!Double.isFinite(score) || (slot != state.slot && score >= bestScore)) continue;
-                var transform = resolve(job, candidate, context, 0);
+                if (Double.isFinite(score)) {
+                    rawScores[slot] = score;
+                }
+            }
+            if (state.slot >= 0 && state.slot < numPoints && Double.isFinite(rawScores[state.slot])) {
+                int curSlot = state.slot;
+                var transform = resolve(job, job.points.get(curSlot), context, 0);
+                if (transform.point().distanceSquared(eyePoint) >= 0.65 * 0.65
+                        && budget.searchRays(6)
+                        && reachable(minecraft, eye, job.source, transform, camera)) {
+                    scores[curSlot] = rawScores[curSlot];
+                    best = curSlot;
+                    bestScore = rawScores[curSlot];
+                }
+                rawScores[curSlot] = Double.POSITIVE_INFINITY;
+            }
+            while (true) {
+                int candidateSlot = -1;
+                double minRaw = bestScore;
+                for (int slot = 0; slot < numPoints; slot++) {
+                    if (rawScores[slot] < minRaw) {
+                        minRaw = rawScores[slot];
+                        candidateSlot = slot;
+                    }
+                }
+                if (candidateSlot < 0) break;
+                rawScores[candidateSlot] = Double.POSITIVE_INFINITY;
+                var transform = resolve(job, job.points.get(candidateSlot), context, 0);
                 if (transform.point().distanceSquared(eyePoint) < 0.65 * 0.65
                         || !budget.searchRays(6)
                         || !reachable(minecraft, eye, job.source, transform, camera)) continue;
-                scores[slot] = score;
-                if (score < bestScore) { best = slot; bestScore = score; }
+                scores[candidateSlot] = minRaw;
+                best = candidateSlot;
+                bestScore = minRaw;
+                break;
             }
             state.lastSolve = now;
             if (best < 0) {
@@ -398,7 +471,8 @@ public final class DynamicSubtitleLayout {
             Point position = state.motion.advance(target, elapsed);
             state.lastFrame = now;
             if (!budget.finalRays(7)) { occupied.remove(job.event.id()); continue; }
-            if (!SpatialAnchorResolver.clear(minecraft, vec(previous), vec(position), null)) {
+            if (previous.distanceSquared(position) > 1e-4
+                    && !SpatialAnchorResolver.clear(minecraft, vec(previous), vec(position), null)) {
                 // A wall changed during the animation. Re-anchor while hidden and request a fresh safe slot.
                 state.motion.reset(state.target);
                 state.lastSolve = Long.MIN_VALUE / 2;
@@ -435,6 +509,7 @@ public final class DynamicSubtitleLayout {
         scratchEligible.clear();
         scratchPreparation.clear();
         scratchLiveIds.clear();
+        scratchSpotlights.clear();
         return List.copyOf(result);
         }
     }
@@ -503,8 +578,7 @@ public final class DynamicSubtitleLayout {
             var shape = level.getBlockState(block).getShape(level, block);
             AABB body = shape.isEmpty() ? new AABB(block.getX(), block.getY(), block.getZ(),
                     block.getX() + 1, block.getY() + 1, block.getZ() + 1) : shape.bounds().move(block);
-            List<AABB> parts = shape.isEmpty() ? List.of(body) : shape.toAabbs().stream().limit(16).map(part -> part.move(block)).toList();
-            return new Source(body, parts, new Point(x, y + 0.05, z), block);
+            return new Source(body, List.of(body), new Point(x, y + 0.05, z), block);
         }
         double height = sourceHeight(event, profile);
         double width = profile.width() > 0 ? profile.width() : height > 0 ? Math.clamp(height * 0.42, 0.35, 1.8) : 0.28;
@@ -537,20 +611,19 @@ public final class DynamicSubtitleLayout {
     }
 
     private static CaptionTransform resolve(Job job, Point position, Frame frame, CaptionRepulsion.RepulsionOffset repulsion) {
-        return resolve(job.event, job.size, job.effect, position, job.darkAmbient, frame, repulsion);
+        return resolve(job.event, job.size, job.effect, position, job.darkAmbient, frame, repulsion,
+                job.hitstopEligible, job.extraScale);
     }
 
     private static CaptionTransform resolve(Job job, Point position, Frame frame, double repulsion) {
-        return resolve(job.event, job.size, job.effect, position, job.darkAmbient, frame, new CaptionRepulsion.RepulsionOffset(0.0, repulsion));
+        return resolve(job.event, job.size, job.effect, position, job.darkAmbient, frame,
+                new CaptionRepulsion.RepulsionOffset(0.0, repulsion), job.hitstopEligible, job.extraScale);
     }
 
     private static CaptionTransform resolve(SubtitlePool.Subtitle event, Size size, CaptionVisuals.Effect sampled,
-                                             Point position, boolean darkAmbient, Frame frame, double repulsion) {
-        return resolve(event, size, sampled, position, darkAmbient, frame, new CaptionRepulsion.RepulsionOffset(0.0, repulsion));
-    }
-
-    private static CaptionTransform resolve(SubtitlePool.Subtitle event, Size size, CaptionVisuals.Effect sampled,
-                                             Point position, boolean darkAmbient, Frame frame, CaptionRepulsion.RepulsionOffset repulsion) {
+                                             Point position, boolean darkAmbient, Frame frame,
+                                             CaptionRepulsion.RepulsionOffset repulsion,
+                                             boolean hitstopEligible, float extraScale) {
         double distance = Math.sqrt(position.distanceSquared(frame.eye));
         boolean selfHurt = isSelfHurt(event.soundId(), distance);
         double dx = event.sourceX() - frame.eye.x(), dz = event.sourceZ() - frame.eye.z();
@@ -558,7 +631,6 @@ public final class DynamicSubtitleLayout {
 
         // 2-Frame Manga Hitstop (~35ms) & Radial Comic Starburst Spikes (100ms)
         long elapsedNanos = frame.now - event.createdNanos();
-        boolean hitstopEligible = MangaHitstopEffect.isEligible(event.soundId(), event.semantics());
         boolean hitstop = hitstopEligible && MangaHitstopEffect.isHitstopActive(elapsedNanos);
         float starburstAlpha = hitstopEligible ? MangaHitstopEffect.calculateStarburstAlpha(elapsedNanos) : 0.0F;
         if (hitstop) {
@@ -585,18 +657,7 @@ public final class DynamicSubtitleLayout {
                 ? AcousticEnvironmentReactor.calculateRefractiveWobble(frame.now / 1_000_000_000.0, event.sourceX() + event.sourceZ())
                 : 0;
         point = point.plus(frame.right, repulsion.dx()).plus(frame.up, wave + repulsion.dy());
-        float baseScale = scale(distance, frame.settings, selfHurt);
-        if (BossChoreographyDirector.isBossSound(event.soundId())) {
-            var bossType = BossChoreographyDirector.identifyBoss(event.soundId());
-            var stage = BossChoreographyDirector.identifyStage(bossType, event.soundId());
-            if (stage != null) {
-                baseScale *= stage.visualScale();
-            }
-        }
-        var streamingSession = StreamingCaptionSession.getSessionBySound(event.soundId());
-        if (streamingSession != null && streamingSession.isActive()) {
-            baseScale *= streamingSession.breathingScale(frame.now);
-        }
+        float baseScale = scale(distance, frame.settings, selfHurt) * extraScale;
         if (selfHurt && frame.lowHealth) baseScale *= (float) (1 + 0.12 * Math.sin(frame.now / 150_000_000.0));
         if (AcousticEnvironmentReactor.isThinAir(point.y(), false)) baseScale *= AcousticEnvironmentReactor.THIN_AIR_SCALE;
         if (darkAmbient && point.distanceSquared(frame.eye) > 64) baseScale *= 0.80F;

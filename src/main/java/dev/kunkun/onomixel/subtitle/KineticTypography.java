@@ -1,6 +1,10 @@
 package dev.kunkun.onomixel.subtitle;
 
+import dev.kunkun.onomixel.custom.CustomWordRule;
+import dev.kunkun.onomixel.custom.SoundCustomizationManager;
+
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -10,6 +14,11 @@ import java.util.List;
 public final class KineticTypography {
     public enum Mode { NONE, WAVE, EXPLOSIVE_TAPER, JITTER }
 
+    /**
+     * @deprecated Legacy equal-width character glyph representation; superseded by {@link AnimatedGlyph}
+     *             and {@link #layoutGlyphs} which preserve actual font advances.
+     */
+    @Deprecated
     public record Glyph(
             char character,
             float localX,
@@ -32,13 +41,26 @@ public final class KineticTypography {
     /** Immutable per-frame glyph transforms and conservative centered bounds. */
     public record Layout(List<AnimatedGlyph> glyphs, float halfWidth, float halfHeight) {
         public Layout {
-            glyphs = List.copyOf(glyphs);
+            glyphs = glyphs instanceof java.util.RandomAccess ? Collections.unmodifiableList(glyphs) : List.copyOf(glyphs);
         }
     }
 
     public static Mode resolveMode(String visualTypeId, String soundId) {
         if (visualTypeId == null) visualTypeId = "";
         if (soundId == null) soundId = "";
+
+        if (!soundId.isEmpty()) {
+            CustomWordRule custom = SoundCustomizationManager.resolve(soundId);
+            if (custom != null && custom.kineticMotion() != null) {
+                String km = custom.kineticMotion();
+                if ("NONE".equalsIgnoreCase(km) || "STATIC".equalsIgnoreCase(km)) return Mode.NONE;
+                if ("WAVE".equalsIgnoreCase(km) || "FLOAT".equalsIgnoreCase(km)) return Mode.WAVE;
+                if ("JITTER".equalsIgnoreCase(km) || "SHAKE".equalsIgnoreCase(km)) return Mode.JITTER;
+                if ("EXPLOSIVE_TAPER".equalsIgnoreCase(km) || "HITSTOP".equalsIgnoreCase(km)
+                        || "POP".equalsIgnoreCase(km) || "STARBURST".equalsIgnoreCase(km)
+                        || "PIERCE".equalsIgnoreCase(km)) return Mode.EXPLOSIVE_TAPER;
+            }
+        }
 
         if (visualTypeId.equals("onomixel:crit")
                 || visualTypeId.equals("onomixel:damage_blunt")
@@ -140,6 +162,10 @@ public final class KineticTypography {
         return new Layout(result, reservedHalfWidth, reservedHalfHeight);
     }
 
+    /**
+     * @deprecated Legacy equal-width layout method; use {@link #layoutGlyphs} for actual font metrics.
+     */
+    @Deprecated
     public static List<Glyph> layout(String text, Mode mode, double ageSeconds, int baseColorArgb, float charWidth) {
         if (text == null || text.isEmpty()) return List.of();
         List<Glyph> glyphs = new ArrayList<>(text.length());
