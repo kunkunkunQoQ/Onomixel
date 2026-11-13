@@ -1,7 +1,7 @@
 # Onomixel 🗯️
 
 [![Minecraft](https://img.shields.io/badge/Minecraft-26.3-informational?style=flat-square&logo=minecraft)](https://minecraft.net/)
-[![NeoForge](https://img.shields.io/badge/NeoForge-26.3.0.99-orange?style=flat-square)](https://neoforged.net/)
+[![NeoForge](https://img.shields.io/badge/NeoForge-26.3.0.103-orange?style=flat-square)](https://neoforged.net/)
 [![Java](https://img.shields.io/badge/Java-25-blue?style=flat-square&logo=openjdk)](https://adoptium.net/)
 [![Bilibili](https://img.shields.io/badge/Bilibili-%E5%9B%B0%E5%9B%B0%E5%9B%B0QAQzZZ-00A1D6?style=flat-square&logo=bilibili&logoColor=white)](https://space.bilibili.com/2115481637)
 [![爱发电](https://img.shields.io/badge/%E7%88%B1%E5%8F%91%E7%94%B5-koukou021-946ce6?style=flat-square)](https://afdian.com/a/koukou021)
@@ -47,7 +47,7 @@
 | 依赖项 | 要求版本 |
 | :--- | :--- |
 | **Minecraft** | `26.3` |
-| **Mod 加载器** | `NeoForge 26.3.0.99+` |
+| **Mod 加载器** | `NeoForge 26.3.0.99～26.3.x（基于 26.3.0.103 构建）` |
 | **Java** | `Java 25` |
 | **客户端/服务端** | **纯客户端 Mod (Client-Only)**，单人游戏或加入任何原版/模组服务器均可使用 |
 

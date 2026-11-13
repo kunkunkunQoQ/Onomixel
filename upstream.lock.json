@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "verifiedOn": "2026-10-29",
+  "verifiedOn": "2026-11-13",
   "template": {
     "repository": "https://github.com/NeoForgeMDKs/MDK-26.3-ModDevGradle",
     "commit": "f31f90e71a3e8fca9d8b821cb25fb5a767d3a2d6",
@@ -12,13 +12,13 @@
     "licenseNote": "Wrapper retains its upstream license headers. Mod license remains All Rights Reserved pending the owner's choice."
   },
   "minecraft": "26.3",
-  "neoForge": "26.3.0.99",
+  "neoForge": "26.3.0.103",
   "modDevGradle": "2.0.148",
   "gradle": "9.2.1",
   "gradleDistributionSha256": "72f44c9f8ebcb1af43838f45ee5c4aa9c5444898b3468ab3f4af7b6076c5bc3f",
   "neoForgeSources": {
-    "url": "https://maven.neoforged.net/releases/net/neoforged/neoforge/26.3.0.99/neoforge-26.3.0.99-sources.jar",
-    "sha256": "568a90af066bf3cf1b665129a37d4b14f1378a50e6815eb5ac9e2e8c37423e54"
+    "url": "https://maven.neoforged.net/releases/net/neoforged/neoforge/26.3.0.103/neoforge-26.3.0.103-sources.jar",
+    "sha256": "ee92e9d1bcc4891ae4c0c091469d44a4752db5daa26bfbeb93b957ec27ec0c9d"
   },
   "originalDesignSha256": "27b4dddc972b158def9f5e3de889116129931047cadec64dc522773ff9212c9e"
 }
