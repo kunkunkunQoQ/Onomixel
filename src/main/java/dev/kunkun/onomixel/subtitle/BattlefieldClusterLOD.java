@@ -1,24 +1,30 @@
 package dev.kunkun.onomixel.subtitle;
 
+import dev.kunkun.onomixel.custom.CustomWordRule;
+import dev.kunkun.onomixel.custom.SoundCustomizationManager;
+import dev.kunkun.onomixel.sound.SoundDefinition;
+import dev.kunkun.onomixel.sound.SoundDefinitions;
 import dev.kunkun.onomixel.sound.SoundSemantics;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Function;
+import java.util.function.UnaryOperator;
 
 /**
  * Battlefield Clustering & Macro-LOD (宏观战场聚类与动态音效 LOD).
  * <p>
  * Handles high-density combat zones, mob farms, raids, and PvP battlefields by:
- * 1. Spatial Binning & Clustering: Groups sounds of similar semantics within 2.5m grid cells.
- *    Promotes clusters with density &gt;= 3 into compound onomatopoeia (Chorus Promotion).
- * 2. Chorus Promotion & Multiplier Badges: Converts dense zombie moans into "群尸哀嚎",
- *    projectiles into "箭雨倾泻", arthropod movement into "百足骚动", breaks into "轰然崩解",
- *    and mob cries into "百兽狂啸", annotated with pop-art multiplier badges (e.g. "×6").
+ * 1. Spatial Binning & Clustering: Groups identical sounds or identical displayed onomatopoeia
+ *    within 2.5m grid cells. Promotes dense groups (&gt;= 3) while keeping each sound's original
+ *    onomatopoeia text, semantics, and visual styling.
+ * 2. Multiplier Badges: Appends concise count suffixes (e.g. "x6", rendered as "&lt;word&gt; x6").
  * 3. Tactical Audio Spotlight: Establishes a 3.5m spotlight radius around critical lethal
  *    threats (creeper fuse, primed TNT, warden sonic boom), suppressing low-threat clutter
  *    alpha down to 20% and applying outward repulsion.
@@ -30,6 +36,8 @@ public final class BattlefieldClusterLOD {
     public static final double CLUSTER_GRID_SIZE = 2.5;
     public static final double CLUSTER_RADIUS = 2.5;
     public static final double CLUSTER_RADIUS_SQUARED = CLUSTER_RADIUS * CLUSTER_RADIUS;
+    public static final double CLUSTER_ABSORPTION_RADIUS = 6.0;
+    public static final double CLUSTER_ABSORPTION_RADIUS_SQUARED = CLUSTER_ABSORPTION_RADIUS * CLUSTER_ABSORPTION_RADIUS;
     public static final int DEFAULT_PROMOTION_THRESHOLD = 3;
 
     public static final double SPOTLIGHT_RADIUS = 3.5;
@@ -68,9 +76,11 @@ public final class BattlefieldClusterLOD {
     }
 
     /**
-     * Comic pop-art multiplier badge indicating dense sound count, e.g. "×6".
+     * Comic pop-art multiplier badge indicating dense sound count, e.g. "x6".
      */
     public record MultiplierBadge(int count, String text) {
+        private static final String[] SUFFIX_CACHE = buildSuffixCache(64);
+
         public MultiplierBadge {
             if (count < 1) {
                 throw new IllegalArgumentException("Badge count must be >= 1, got: " + count);
@@ -79,7 +89,25 @@ public final class BattlefieldClusterLOD {
         }
 
         public static MultiplierBadge of(int count) {
-            return new MultiplierBadge(count, "×" + count);
+            return new MultiplierBadge(count, "x" + count);
+        }
+
+        /**
+         * Returns the space-prefixed multiplier suffix (e.g. " x3") with zero allocation for counts &lt;= 64.
+         */
+        public static String formatSuffix(int count) {
+            if (count >= 1 && count < SUFFIX_CACHE.length) {
+                return SUFFIX_CACHE[count];
+            }
+            return " x" + count;
+        }
+
+        private static String[] buildSuffixCache(int maxCount) {
+            String[] cache = new String[maxCount + 1];
+            for (int i = 1; i <= maxCount; i++) {
+                cache[i] = " x" + i;
+            }
+            return cache;
         }
     }
 
@@ -207,7 +235,7 @@ public final class BattlefieldClusterLOD {
     }
 
     /**
-     * A compound macro-onomatopoeia cluster promoted from multiple individual sounds.
+     * A dense same-sound / same-onomatopoeia cluster promoted from multiple individual sounds.
      */
     public record ChorusCluster(
             ChorusCategory category,
@@ -219,7 +247,8 @@ public final class BattlefieldClusterLOD {
             MultiplierBadge badge,
             List<SoundEntry> members,
             float alpha,
-            int priority
+            int priority,
+            String clusterKey
     ) {
         public ChorusCluster {
             Objects.requireNonNull(category, "category cannot be null");
@@ -232,6 +261,29 @@ public final class BattlefieldClusterLOD {
                 throw new IllegalArgumentException("ChorusCluster alpha must be finite: " + alpha);
             }
             members = members != null ? List.copyOf(members) : List.of();
+            if (clusterKey == null || clusterKey.isEmpty()) {
+                clusterKey = !members.isEmpty()
+                        ? normalizeClusterKey(members.getFirst().soundId())
+                        : (translationKey != null ? translationKey : category.translationKey());
+            }
+        }
+
+        public ChorusCluster(
+                ChorusCategory category,
+                String promotedText,
+                String translationKey,
+                double x,
+                double y,
+                double z,
+                MultiplierBadge badge,
+                List<SoundEntry> members,
+                float alpha,
+                int priority
+        ) {
+            this(category, promotedText, translationKey, x, y, z, badge, members, alpha, priority,
+                    members != null && !members.isEmpty()
+                            ? normalizeClusterKey(selectRepresentative(members).soundId())
+                            : (translationKey != null ? translationKey : category.translationKey()));
         }
 
         public ChorusCluster(
@@ -257,6 +309,14 @@ public final class BattlefieldClusterLOD {
                 max = Math.max(max, members.get(i).priority());
             }
             return max;
+        }
+
+        public SoundEntry representative() {
+            return members.isEmpty() ? null : selectRepresentative(members);
+        }
+
+        public String displayTitle() {
+            return promotedText + " " + badge.text();
         }
 
         public int count() {
@@ -308,6 +368,82 @@ public final class BattlefieldClusterLOD {
 
     public static GridKey gridKey(double x, double y, double z, ChorusCategory category) {
         return new GridKey(gridCoord(x), gridCoord(y), gridCoord(z), category);
+    }
+
+    /**
+     * Internal 2.5m grid + sound/onomatopoeia identity bucket key.
+     */
+    private record ClusterBucketKey(long gx, long gy, long gz, String groupKey) {}
+
+    private static String normalizeClusterKey(String key) {
+        if (key == null || key.isEmpty()) {
+            return "";
+        }
+        return hasUppercase(key) ? key.toLowerCase(Locale.ROOT) : key;
+    }
+
+    private static String defaultSubtitleClusterKey(SubtitlePool.Subtitle sub) {
+        String soundKey = normalizeClusterKey(sub.soundId());
+        String transKey = sub.translationKey();
+        if (transKey != null && transKey.startsWith("literal:")) {
+            return soundKey + '\0' + transKey;
+        }
+        return soundKey;
+    }
+
+    static String resolveSubtitleClusterKey(
+            SubtitlePool.Subtitle sub,
+            Function<SubtitlePool.Subtitle, String> keyExtractor
+    ) {
+        if (keyExtractor == null) {
+            return defaultSubtitleClusterKey(sub);
+        }
+        String customKey = keyExtractor.apply(sub);
+        return (customKey != null && !customKey.isEmpty()) ? customKey : defaultSubtitleClusterKey(sub);
+    }
+
+    static int subtitleWeight(SubtitlePool.Subtitle sub) {
+        return Math.clamp(sub.repeatCount(), 1, 64);
+    }
+
+    private static SoundEntry selectRepresentative(List<SoundEntry> bucket) {
+        SoundEntry best = bucket.getFirst();
+        int bestPriority = best.priority();
+        for (int i = 1, size = bucket.size(); i < size; i++) {
+            SoundEntry candidate = bucket.get(i);
+            if (candidate.priority() > bestPriority) {
+                best = candidate;
+                bestPriority = candidate.priority();
+            }
+        }
+        return best;
+    }
+
+    static String resolveBaseTranslationKey(SoundEntry rep) {
+        String rawText = rep.text();
+        String soundId = rep.soundId();
+        if (rawText != null && !rawText.isEmpty() && !rawText.equals(soundId)) {
+            return rawText;
+        }
+        SoundDefinition def = SoundDefinitions.find(soundId);
+        if (def != null && def.translationKey() != null && !def.translationKey().isEmpty()) {
+            return def.translationKey();
+        }
+        return rawText != null && !rawText.isEmpty() ? rawText : soundId;
+    }
+
+    private static String stripLiteralPrefix(String translationKey) {
+        if (translationKey != null && translationKey.startsWith("literal:")) {
+            return translationKey.substring(8);
+        }
+        return translationKey != null ? translationKey : "";
+    }
+
+    /**
+     * Checks whether a subtitle represents a merged cluster entry created by {@link #createClusterSubtitle}.
+     */
+    public static boolean isClusterSubtitle(SubtitlePool.Subtitle sub) {
+        return sub != null && sub.id() < 0 && "cluster".equals(sub.worldId());
     }
 
     private static boolean hasUppercase(String s) {
@@ -518,13 +654,13 @@ public final class BattlefieldClusterLOD {
             return fastUnclusteredResult(sounds);
         }
 
-        // 2. Spatial Binning by 2.5m grid cell & ChorusCategory
-        Map<GridKey, List<SoundEntry>> gridBuckets = new LinkedHashMap<>(Math.min(sounds.size(), 64));
+        // 2. Spatial Binning by 2.5m grid cell & normalized soundId
+        Map<ClusterBucketKey, List<SoundEntry>> gridBuckets = new LinkedHashMap<>(Math.min(sounds.size(), 64));
         for (int i = 0, size = sounds.size(); i < size; i++) {
             SoundEntry s = sounds.get(i);
             if (s == null) continue;
-            ChorusCategory cat = categorize(s.soundId(), s.semantics());
-            GridKey key = gridKey(s.x(), s.y(), s.z(), cat);
+            ClusterBucketKey key = new ClusterBucketKey(
+                    gridCoord(s.x()), gridCoord(s.y()), gridCoord(s.z()), normalizeClusterKey(s.soundId()));
             gridBuckets.computeIfAbsent(key, k -> new ArrayList<>(4)).add(s);
         }
 
@@ -550,48 +686,78 @@ public final class BattlefieldClusterLOD {
         return new ProcessedBattlefield(List.of(), valid == null ? sounds : valid, List.of());
     }
 
+    private static ChorusCluster buildClusterFromMembers(
+            List<SoundEntry> bucket,
+            String clusterKey,
+            List<SpotlightZone> spotlights
+    ) {
+        int bsize = bucket.size();
+        double sumX = 0.0;
+        double sumY = 0.0;
+        double sumZ = 0.0;
+        for (int i = 0; i < bsize; i++) {
+            SoundEntry s = bucket.get(i);
+            sumX += s.x();
+            sumY += s.y();
+            sumZ += s.z();
+        }
+        double avgX = sumX / bsize;
+        double avgY = sumY / bsize;
+        double avgZ = sumZ / bsize;
+
+        SoundEntry rep = selectRepresentative(bucket);
+        ChorusCategory cat = categorize(rep.soundId(), rep.semantics());
+        MultiplierBadge badge = MultiplierBadge.of(bsize);
+        String translationKey = resolveBaseTranslationKey(rep);
+        String promotedText = stripLiteralPrefix(translationKey);
+        float clusterAlpha = spotlights.isEmpty()
+                ? 1.0f
+                : evaluateSpotlightAlpha(avgX, avgY, avgZ, rep.soundId(), spotlights, 1.0f);
+        return new ChorusCluster(
+                cat,
+                promotedText,
+                translationKey,
+                avgX,
+                avgY,
+                avgZ,
+                badge,
+                bucket,
+                clusterAlpha,
+                ChorusCluster.maxMemberPriority(bucket),
+                clusterKey
+        );
+    }
+
     private static ProcessedBattlefield finalizeBuckets(
-            Map<GridKey, List<SoundEntry>> gridBuckets,
+            Map<ClusterBucketKey, List<SoundEntry>> gridBuckets,
             int threshold,
             List<SpotlightZone> spotlights
     ) {
         List<ChorusCluster> clusters = null;
         List<SoundEntry> unclustered = null;
+        List<String> unclusteredGroupKeys = null;
 
         // 3. Density promotion and spotlight suppression
-        for (Map.Entry<GridKey, List<SoundEntry>> entry : gridBuckets.entrySet()) {
+        for (Map.Entry<ClusterBucketKey, List<SoundEntry>> entry : gridBuckets.entrySet()) {
             List<SoundEntry> bucket = entry.getValue();
-            ChorusCategory cat = entry.getKey().category();
+            String groupKey = entry.getKey().groupKey();
 
             int bsize = bucket.size();
             if (bsize >= threshold) {
-                double sumX = 0.0;
-                double sumY = 0.0;
-                double sumZ = 0.0;
-                for (int i = 0; i < bsize; i++) {
-                    SoundEntry s = bucket.get(i);
-                    sumX += s.x();
-                    sumY += s.y();
-                    sumZ += s.z();
-                }
-                double avgX = sumX / bsize;
-                double avgY = sumY / bsize;
-                double avgZ = sumZ / bsize;
-
-                MultiplierBadge badge = MultiplierBadge.of(bsize);
-                float clusterAlpha = spotlights.isEmpty()
-                        ? 1.0f
-                        : evaluateSpotlightAlpha(avgX, avgY, avgZ, bucket.getFirst().soundId(), spotlights, 1.0f);
                 if (clusters == null) {
                     clusters = new ArrayList<>(4);
                 }
-                clusters.add(new ChorusCluster(cat, cat.defaultTitle(), avgX, avgY, avgZ, badge, bucket, clusterAlpha));
+                clusters.add(buildClusterFromMembers(bucket, groupKey, spotlights));
             } else {
                 if (unclustered == null) {
                     unclustered = new ArrayList<>(bsize);
+                    unclusteredGroupKeys = new ArrayList<>(bsize);
                 }
                 if (spotlights.isEmpty()) {
-                    unclustered.addAll(bucket);
+                    for (int i = 0; i < bsize; i++) {
+                        unclustered.add(bucket.get(i));
+                        unclusteredGroupKeys.add(groupKey);
+                    }
                 } else {
                     for (int i = 0; i < bsize; i++) {
                         SoundEntry s = bucket.get(i);
@@ -600,9 +766,15 @@ public final class BattlefieldClusterLOD {
                         unclustered.add(alpha == s.alpha() && priority == s.priority()
                                 ? s
                                 : s.withAlpha(alpha).withPriority(priority));
+                        unclusteredGroupKeys.add(groupKey);
                     }
                 }
             }
+        }
+
+        // 4. Absorb cross-grid-boundary unclustered solo entries into nearby matching promoted clusters
+        if (clusters != null && !clusters.isEmpty() && unclustered != null && !unclustered.isEmpty()) {
+            unclustered = absorbNearbyUnclustered(clusters, unclustered, unclusteredGroupKeys, spotlights);
         }
 
         return new ProcessedBattlefield(
@@ -612,12 +784,80 @@ public final class BattlefieldClusterLOD {
         );
     }
 
+    private static List<SoundEntry> absorbNearbyUnclustered(
+            List<ChorusCluster> clusters,
+            List<SoundEntry> unclustered,
+            List<String> unclusteredGroupKeys,
+            List<SpotlightZone> spotlights
+    ) {
+        int clusterCount = clusters.size();
+        List<List<SoundEntry>> absorbedPerCluster = null;
+        int usize = unclustered.size();
+        boolean[] absorbed = null;
+        for (int i = 0; i < usize; i++) {
+            SoundEntry candidate = unclustered.get(i);
+            String groupKey = unclusteredGroupKeys.get(i);
+            int bestClusterIdx = -1;
+            double bestDistSq = CLUSTER_ABSORPTION_RADIUS_SQUARED;
+            for (int c = 0; c < clusterCount; c++) {
+                ChorusCluster cluster = clusters.get(c);
+                if (!cluster.clusterKey().equals(groupKey)) {
+                    continue;
+                }
+                double dx = candidate.x() - cluster.x();
+                double dy = candidate.y() - cluster.y();
+                double dz = candidate.z() - cluster.z();
+                double distSq = dx * dx + dy * dy + dz * dz;
+                if (distSq <= bestDistSq) {
+                    bestDistSq = distSq;
+                    bestClusterIdx = c;
+                }
+            }
+            if (bestClusterIdx >= 0) {
+                if (absorbedPerCluster == null) {
+                    absorbedPerCluster = new ArrayList<>(clusterCount);
+                    for (int c = 0; c < clusterCount; c++) {
+                        absorbedPerCluster.add(null);
+                    }
+                    absorbed = new boolean[usize];
+                }
+                absorbed[i] = true;
+                List<SoundEntry> extra = absorbedPerCluster.get(bestClusterIdx);
+                if (extra == null) {
+                    extra = new ArrayList<>(4);
+                    absorbedPerCluster.set(bestClusterIdx, extra);
+                }
+                extra.add(candidate);
+            }
+        }
+        if (absorbedPerCluster == null) {
+            return unclustered;
+        }
+        List<SoundEntry> finalRemaining = new ArrayList<>(usize);
+        for (int i = 0; i < usize; i++) {
+            if (!absorbed[i]) {
+                finalRemaining.add(unclustered.get(i));
+            }
+        }
+        for (int c = 0; c < clusterCount; c++) {
+            List<SoundEntry> extra = absorbedPerCluster.get(c);
+            if (extra != null && !extra.isEmpty()) {
+                ChorusCluster existing = clusters.get(c);
+                List<SoundEntry> combined = new ArrayList<>(existing.members().size() + extra.size());
+                combined.addAll(existing.members());
+                combined.addAll(extra);
+                clusters.set(c, buildClusterFromMembers(combined, existing.clusterKey(), spotlights));
+            }
+        }
+        return finalRemaining;
+    }
+
     /**
      * Fast zero-allocation pre-check determining whether any grid bucket in {@code subtitles}
      * can reach the default cluster promotion threshold.
      */
     public static boolean hasPotentialCluster(List<SubtitlePool.Subtitle> subtitles) {
-        return hasPotentialCluster(subtitles, DEFAULT_PROMOTION_THRESHOLD);
+        return hasPotentialCluster(subtitles, DEFAULT_PROMOTION_THRESHOLD, null);
     }
 
     /**
@@ -625,6 +865,19 @@ public final class BattlefieldClusterLOD {
      * can reach {@code promotionThreshold}.
      */
     public static boolean hasPotentialCluster(List<SubtitlePool.Subtitle> subtitles, int promotionThreshold) {
+        return hasPotentialCluster(subtitles, promotionThreshold, null);
+    }
+
+    /**
+     * Fast pre-check determining whether any grid bucket in {@code subtitles}
+     * can reach {@code promotionThreshold} under {@code keyExtractor} (when null, uses default sound/literal key).
+     * Common frames without dense cells exit in Phase 1 with zero allocations and without calling {@code keyExtractor}.
+     */
+    public static boolean hasPotentialCluster(
+            List<SubtitlePool.Subtitle> subtitles,
+            int promotionThreshold,
+            Function<SubtitlePool.Subtitle, String> keyExtractor
+    ) {
         if (subtitles == null || subtitles.isEmpty()) {
             return false;
         }
@@ -636,13 +889,7 @@ public final class BattlefieldClusterLOD {
             if (sub == null) {
                 continue;
             }
-            int repeats = sub.repeatCount();
-            int weight;
-            if (repeats > 1 && categorize(sub.soundId(), sub.semantics()) != ChorusCategory.GENERIC_CHORUS) {
-                weight = Math.min(repeats, 16);
-            } else {
-                weight = 1;
-            }
+            int weight = subtitleWeight(sub);
             if (weight >= threshold) {
                 return true;
             }
@@ -672,44 +919,83 @@ public final class BattlefieldClusterLOD {
                 continue;
             }
 
-            int cellUpperBound = si.repeatCount() > 1 ? Math.min(si.repeatCount(), 16) : 1;
+            int cellUpperBound = subtitleWeight(si);
             for (int k = i + 1; k < size; k++) {
                 SubtitlePool.Subtitle sk = subtitles.get(k);
                 if (sk != null && gridCoord(sk.x()) == gxi && gridCoord(sk.y()) == gyi && gridCoord(sk.z()) == gzi) {
-                    cellUpperBound += sk.repeatCount() > 1 ? Math.min(sk.repeatCount(), 16) : 1;
+                    cellUpperBound += subtitleWeight(sk);
                 }
             }
             if (cellUpperBound < threshold) {
                 continue;
             }
 
-            int wZombie = 0;
-            int wBeast = 0;
-            int wArrow = 0;
-            int wArthropod = 0;
-            int wCollapse = 0;
-            int wGeneric = 0;
-            for (int k = i; k < size; k++) {
+            if (cellHasMatchingGroup(subtitles, size, i, gxi, gyi, gzi, threshold, keyExtractor)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean cellHasMatchingGroup(
+            List<SubtitlePool.Subtitle> subtitles,
+            int size,
+            int cellStartIndex,
+            long gx,
+            long gy,
+            long gz,
+            int threshold,
+            Function<SubtitlePool.Subtitle, String> keyExtractor
+    ) {
+        if (keyExtractor == null) {
+            for (int k = cellStartIndex; k < size; k++) {
                 SubtitlePool.Subtitle sk = subtitles.get(k);
-                if (sk == null || gridCoord(sk.x()) != gxi || gridCoord(sk.y()) != gyi || gridCoord(sk.z()) != gzi) {
+                if (sk == null || gridCoord(sk.x()) != gx || gridCoord(sk.y()) != gy || gridCoord(sk.z()) != gz) {
                     continue;
                 }
-                ChorusCategory cat = categorize(sk.soundId(), sk.semantics());
-                int weight = (cat != ChorusCategory.GENERIC_CHORUS && sk.repeatCount() > 1)
-                        ? Math.min(sk.repeatCount(), 16)
-                        : 1;
-                int bucketCount = switch (cat) {
-                    case ZOMBIE_CHORUS -> (wZombie += weight);
-                    case BEAST_ROAR -> (wBeast += weight);
-                    case ARROW_RAIN -> (wArrow += weight);
-                    case ARTHROPOD_SWARM -> (wArthropod += weight);
-                    case STRUCTURE_COLLAPSE -> (wCollapse += weight);
-                    case GENERIC_CHORUS -> (wGeneric += weight);
-                };
-                if (bucketCount >= threshold) {
+                String gk = defaultSubtitleClusterKey(sk);
+                boolean seenEarlier = false;
+                for (int prev = cellStartIndex; prev < k; prev++) {
+                    SubtitlePool.Subtitle sp = subtitles.get(prev);
+                    if (sp != null && gridCoord(sp.x()) == gx && gridCoord(sp.y()) == gy && gridCoord(sp.z()) == gz
+                            && defaultSubtitleClusterKey(sp).equals(gk)) {
+                        seenEarlier = true;
+                        break;
+                    }
+                }
+                if (seenEarlier) {
+                    continue;
+                }
+                int count = subtitleWeight(sk);
+                if (count >= threshold) {
                     return true;
                 }
+                for (int m = k + 1; m < size; m++) {
+                    SubtitlePool.Subtitle sm = subtitles.get(m);
+                    if (sm != null && gridCoord(sm.x()) == gx && gridCoord(sm.y()) == gy && gridCoord(sm.z()) == gz
+                            && defaultSubtitleClusterKey(sm).equals(gk)) {
+                        count += subtitleWeight(sm);
+                        if (count >= threshold) {
+                            return true;
+                        }
+                    }
+                }
             }
+            return false;
+        }
+
+        Map<String, Integer> groupCounts = new HashMap<>(8);
+        for (int k = cellStartIndex; k < size; k++) {
+            SubtitlePool.Subtitle sk = subtitles.get(k);
+            if (sk == null || gridCoord(sk.x()) != gx || gridCoord(sk.y()) != gy || gridCoord(sk.z()) != gz) {
+                continue;
+            }
+            String gk = resolveSubtitleClusterKey(sk, keyExtractor);
+            int nextCount = groupCounts.getOrDefault(gk, 0) + subtitleWeight(sk);
+            if (nextCount >= threshold) {
+                return true;
+            }
+            groupCounts.put(gk, nextCount);
         }
         return false;
     }
@@ -718,13 +1004,24 @@ public final class BattlefieldClusterLOD {
      * Processes live subtitles directly from {@link SubtitlePool.Subtitle}.
      */
     public static ProcessedBattlefield processSubtitles(List<SubtitlePool.Subtitle> subtitles) {
-        return processSubtitles(subtitles, DEFAULT_PROMOTION_THRESHOLD);
+        return processSubtitles(subtitles, DEFAULT_PROMOTION_THRESHOLD, null);
     }
 
     /**
      * Processes live subtitles directly with custom promotion threshold.
      */
     public static ProcessedBattlefield processSubtitles(List<SubtitlePool.Subtitle> subtitles, int promotionThreshold) {
+        return processSubtitles(subtitles, promotionThreshold, null);
+    }
+
+    /**
+     * Processes live subtitles with a custom grouping key extractor (e.g. localized display text + visual style).
+     */
+    public static ProcessedBattlefield processSubtitles(
+            List<SubtitlePool.Subtitle> subtitles,
+            int promotionThreshold,
+            Function<SubtitlePool.Subtitle, String> keyExtractor
+    ) {
         if (subtitles == null || subtitles.isEmpty()) {
             return ProcessedBattlefield.EMPTY;
         }
@@ -737,12 +1034,7 @@ public final class BattlefieldClusterLOD {
             if (sub == null) {
                 continue;
             }
-            int repeats = sub.repeatCount();
-            if (repeats > 1 && categorize(sub.soundId(), sub.semantics()) != ChorusCategory.GENERIC_CHORUS) {
-                totalEntries += Math.min(repeats, 16);
-            } else {
-                totalEntries += 1;
-            }
+            totalEntries += subtitleWeight(sub);
             if (isCriticalThreat(sub.soundId())) {
                 if (spotlights == null) {
                     spotlights = new ArrayList<>(4);
@@ -760,33 +1052,26 @@ public final class BattlefieldClusterLOD {
                 SubtitlePool.Subtitle sub = subtitles.get(i);
                 if (sub == null) continue;
                 SoundEntry base = SoundEntry.fromSubtitle(sub);
-                unclustered.add(base);
-                int repeats = sub.repeatCount();
-                if (repeats > 1 && categorize(sub.soundId(), sub.semantics()) != ChorusCategory.GENERIC_CHORUS) {
-                    int extra = Math.min(repeats - 1, 15);
-                    for (int r = 0; r < extra; r++) {
-                        unclustered.add(base);
-                    }
+                int weight = subtitleWeight(sub);
+                for (int r = 0; r < weight; r++) {
+                    unclustered.add(base);
                 }
             }
             return new ProcessedBattlefield(List.of(), unclustered, List.of());
         }
 
-        Map<GridKey, List<SoundEntry>> gridBuckets = new LinkedHashMap<>(Math.min(size, 64));
+        Map<ClusterBucketKey, List<SoundEntry>> gridBuckets = new LinkedHashMap<>(Math.min(size, 64));
         for (int i = 0; i < size; i++) {
             SubtitlePool.Subtitle sub = subtitles.get(i);
             if (sub == null) continue;
             SoundEntry base = SoundEntry.fromSubtitle(sub);
-            ChorusCategory cat = categorize(base.soundId(), base.semantics());
-            GridKey key = gridKey(base.x(), base.y(), base.z(), cat);
+            String groupKey = resolveSubtitleClusterKey(sub, keyExtractor);
+            ClusterBucketKey key = new ClusterBucketKey(
+                    gridCoord(base.x()), gridCoord(base.y()), gridCoord(base.z()), groupKey);
             List<SoundEntry> bucket = gridBuckets.computeIfAbsent(key, k -> new ArrayList<>(4));
-            bucket.add(base);
-            int repeats = sub.repeatCount();
-            if (repeats > 1 && cat != ChorusCategory.GENERIC_CHORUS) {
-                int extra = Math.min(repeats - 1, 15);
-                for (int r = 0; r < extra; r++) {
-                    bucket.add(base);
-                }
+            int weight = subtitleWeight(sub);
+            for (int r = 0; r < weight; r++) {
+                bucket.add(base);
             }
         }
         return finalizeBuckets(gridBuckets, threshold, spotlightList);
@@ -794,14 +1079,18 @@ public final class BattlefieldClusterLOD {
 
     /**
      * Converts a promoted ChorusCluster into a synthetic Subtitle representation
-     * suitable for consumption by DynamicSubtitleLayout.
+     * suitable for consumption by DynamicSubtitleLayout while preserving original sound semantics
+     * and translation/onomatopoeia key.
      */
     public static SubtitlePool.Subtitle createClusterSubtitle(ChorusCluster cluster, long now) {
         if (cluster == null || cluster.members().isEmpty()) return null;
-        SoundEntry first = cluster.members().getFirst();
-        long id = computeStableClusterId(cluster.category(), cluster.x(), cluster.y(), cluster.z());
-        String badgeTitle = cluster.promotedText() + " " + cluster.badge().text();
-        SoundSemantics semantics = switch (cluster.category()) {
+        SoundEntry rep = cluster.representative();
+        String soundId = rep.soundId();
+        String baseKey = (cluster.translationKey() != null && !cluster.translationKey().isEmpty())
+                ? cluster.translationKey()
+                : resolveBaseTranslationKey(rep);
+        long id = computeStableClusterId(cluster.clusterKey(), cluster.x(), cluster.y(), cluster.z());
+        SoundSemantics semantics = rep.semantics() != null ? rep.semantics() : switch (cluster.category()) {
             case ZOMBIE_CHORUS, BEAST_ROAR -> SoundSemantics.VOICE;
             case ARROW_RAIN -> SoundSemantics.DAMAGE;
             case ARTHROPOD_SWARM -> SoundSemantics.STEP;
@@ -810,10 +1099,49 @@ public final class BattlefieldClusterLOD {
         };
         long duration = 1_500_000_000L;
         long createdAt = now - 100_000_000L;
-        return new SubtitlePool.Subtitle(id, cluster.translationKey(), badgeTitle, "cluster", "chorus",
-                cluster.x(), cluster.y(), cluster.z(), cluster.x(), cluster.y(), cluster.z(),
-                createdAt, now + duration, now + 2 * duration, now, cluster.priority(),
-                semantics, cluster.category().name(), false);
+        long radarDur = ThreatRegistry.radarDurationNanos(soundId, duration);
+        long radarExpires = radarDur > 0 ? now + radarDur : now + duration;
+        return new SubtitlePool.Subtitle(
+                id,
+                soundId,
+                baseKey,
+                "cluster",
+                "chorus",
+                cluster.x(), cluster.y(), cluster.z(),
+                cluster.x(), cluster.y(), cluster.z(),
+                createdAt, now + duration, now + 2 * duration, now,
+                cluster.priority(),
+                semantics,
+                semantics.mergeGroup(soundId),
+                false,
+                radarExpires,
+                cluster.badge().count()
+        );
+    }
+
+    /**
+     * Generates a deterministic, unique, negative Long ID for a cluster based on its
+     * discrete spatial grid cell (2.5m grid) and cluster key, ensuring frame-to-frame stability
+     * even when multiple distinct sounds cluster inside the same cell.
+     */
+    public static long computeStableClusterId(String clusterKey, double x, double y, double z) {
+        long gx = gridCoord(x);
+        long gy = gridCoord(y);
+        long gz = gridCoord(z);
+        long hash = 0x9E3779B97F4A7C15L;
+        if (clusterKey != null) {
+            for (int i = 0, len = clusterKey.length(); i < len; i++) {
+                hash = hash * 31L + clusterKey.charAt(i);
+            }
+        }
+        hash = hash * 31L + gx;
+        hash = hash * 31L + gy;
+        hash = hash * 31L + gz;
+        hash = (hash ^ (hash >>> 32)) * 0xBF58476D1CE4E5B9L;
+        hash = (hash ^ (hash >>> 27)) * 0x94D049BB133111EBL;
+        hash = hash ^ (hash >>> 31);
+        long abs = hash == Long.MIN_VALUE ? 1L : Math.abs(hash);
+        return -Math.max(1L, abs);
     }
 
     /**
@@ -833,5 +1161,57 @@ public final class BattlefieldClusterLOD {
         hash = (hash ^ (hash >>> 32)) * 0x45d9f3bL;
         hash = hash ^ (hash >>> 32);
         return -Math.max(1L, Math.abs(hash));
+    }
+
+    /**
+     * Resolves a pure-JVM clustering key combining displayed onomatopoeia text with
+     * resolved visual styling, threat level, source geometry, and semantics so only
+     * visually and semantically equivalent hot-cell sounds merge into {@code <text> xN}.
+     */
+    public static String styleGroupingKey(SubtitlePool.Subtitle event, UnaryOperator<String> translationResolver) {
+        if (event == null) {
+            return "";
+        }
+        String soundId = event.soundId();
+        String rawKey = event.translationKey();
+        String resolvedText;
+        if (rawKey == null || rawKey.isBlank()) {
+            resolvedText = soundId != null ? soundId : "";
+        } else if (rawKey.startsWith("literal:")) {
+            resolvedText = rawKey.substring("literal:".length());
+        } else {
+            String translated = translationResolver != null ? translationResolver.apply(rawKey) : rawKey;
+            resolvedText = translated != null ? translated : rawKey;
+        }
+        CustomWordRule customRule = SoundCustomizationManager.resolve(soundId);
+        VisualType type = CaptionVisuals.type(soundId, customRule);
+        KineticTypography.Mode kinetic = KineticTypography.resolveMode(type.id(), soundId, customRule);
+        VisualColor color = VisualTypeRegistry.resolveColor(soundId, type);
+        boolean isBold = customRule != null && customRule.bold() != null ? customRule.bold() : type.isBold();
+        boolean isItalic = customRule != null && customRule.italic() != null ? customRule.italic() : type.isItalic();
+        float scaleMultiplier = customRule != null && customRule.scaleMultiplier() != null
+                ? customRule.scaleMultiplier() : 1.0f;
+        double heightOffset = customRule != null && customRule.heightOffset() != null
+                ? customRule.heightOffset() : 0.0;
+        ThreatRegistry.ThreatLevel threat = ThreatRegistry.evaluate(soundId);
+        SoundDefinition.Source source = SoundDefinitions.source(soundId);
+        SoundSemantics semantics = event.semantics() != null ? event.semantics() : SoundSemantics.OTHER;
+        String bossIdentity = BossChoreographyDirector.isBossSound(soundId) ? soundId : "";
+
+        StringBuilder sb = new StringBuilder(96);
+        sb.append(resolvedText).append('|')
+                .append(type.id()).append('|')
+                .append(kinetic.ordinal()).append('|')
+                .append(color.vibrant()).append(':').append(color.pastel()).append('|')
+                .append(isBold ? '1' : '0').append(isItalic ? '1' : '0').append('|')
+                .append(Float.floatToIntBits(scaleMultiplier)).append('|')
+                .append(Double.doubleToLongBits(heightOffset)).append('|')
+                .append(threat.ordinal()).append('|')
+                .append(source.kind().ordinal()).append(':').append(Float.floatToIntBits((float) source.height())).append('|')
+                .append(semantics.ordinal());
+        if (!bossIdentity.isEmpty()) {
+            sb.append('|').append(bossIdentity);
+        }
+        return sb.toString();
     }
 }

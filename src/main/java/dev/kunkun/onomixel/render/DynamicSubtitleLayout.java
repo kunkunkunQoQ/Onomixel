@@ -11,6 +11,7 @@ import dev.kunkun.onomixel.sound.SoundDefinitions;
 import dev.kunkun.onomixel.sound.SoundDefinition;
 import dev.kunkun.onomixel.sound.SoundSemantics;
 import dev.kunkun.onomixel.subtitle.BattlefieldClusterLOD;
+import dev.kunkun.onomixel.subtitle.BattlefieldClusterTracker;
 import dev.kunkun.onomixel.subtitle.BossChoreographyDirector;
 import dev.kunkun.onomixel.subtitle.CaptionSettings;
 import dev.kunkun.onomixel.subtitle.CaptionPlacement;
@@ -25,6 +26,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
 import net.minecraft.core.BlockPos;
+import net.minecraft.locale.Language;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
@@ -69,7 +71,7 @@ public final class DynamicSubtitleLayout {
     private final List<LayoutBudget.Candidate> scratchPreparation = new ArrayList<>(32);
     private final Set<Long> scratchPrepared = new HashSet<>(32);
     private final List<LayoutBudget.Candidate> scratchShortlistRest = new ArrayList<>(32);
-    private final Set<Long> scratchClusterIds = new HashSet<>(16);
+    private final BattlefieldClusterTracker clusterTracker = new BattlefieldClusterTracker();
     private final List<SubtitlePool.Subtitle> scratchClusteredCandidates = new ArrayList<>(32);
     private final List<BattlefieldClusterLOD.SpotlightZone> scratchSpotlights = new ArrayList<>(8);
     private final List<Job> scratchJobs = new ArrayList<>(24);
@@ -147,8 +149,22 @@ public final class DynamicSubtitleLayout {
                        List<BillboardProjection.Bounds> silhouettes, List<BillboardProjection.Bounds> slotBounds,
                        boolean darkAmbient, float alphaMultiplier, boolean hitstopEligible, float extraScale) {}
 
+    /**
+     * Groups hot-cell subtitles for xN clustering only when they resolve to identical
+     * displayed text and matching visual styling/source semantics.
+     */
+    static String clusterGroupKey(SubtitlePool.Subtitle event) {
+        return BattlefieldClusterLOD.styleGroupingKey(event, DynamicSubtitleLayout::translateKey);
+    }
+
+    private static String translateKey(String rawKey) {
+        Language language = Language.getInstance();
+        return language != null ? language.getOrDefault(rawKey) : rawKey;
+    }
+
     public void clear() {
         states.clear();
+        clusterTracker.clear();
         level = null;
         lastWork = ZERO_COUNTS;
         lastVpWidth = -1;
@@ -165,7 +181,6 @@ public final class DynamicSubtitleLayout {
         scratchPreparation.clear();
         scratchPrepared.clear();
         scratchShortlistRest.clear();
-        scratchClusterIds.clear();
         scratchClusteredCandidates.clear();
         scratchSpotlights.clear();
         scratchJobs.clear();
@@ -181,12 +196,13 @@ public final class DynamicSubtitleLayout {
     }
 
     public List<Placed> layout(Minecraft minecraft, SubtitlePool pool, CameraRenderState camera, long now, CaptionSettings settings) {
-        if (level != minecraft.level) { states.clear(); level = minecraft.level; }
+        if (level != minecraft.level) { states.clear(); clusterTracker.clear(); level = minecraft.level; }
         if (level == null || !camera.initialized) return List.of();
         frame++;
         BossChoreographyDirector.getInstance().cleanExpiredFields(now);
+        boolean hasActiveClusters = clusterTracker.hasActiveClusters(now);
         var activeSubtitles = pool.activeView();
-        if (activeSubtitles.isEmpty() && states.isEmpty()) {
+        if (activeSubtitles.isEmpty() && !hasActiveClusters && states.isEmpty()) {
             lastWork = ZERO_COUNTS;
             return List.of();
         }
@@ -195,7 +211,7 @@ public final class DynamicSubtitleLayout {
             scratchLiveIds.add(activeSubtitles.get(i).id());
         }
         states.keySet().removeIf(id -> (id > 0 && !scratchLiveIds.contains(id)) || (id < 0 && now - states.get(id).lastFrame > 2_000_000_000L));
-        if (activeSubtitles.isEmpty()) {
+        if (activeSubtitles.isEmpty() && !hasActiveClusters) {
             scratchLiveIds.clear();
             lastWork = ZERO_COUNTS;
             return List.of();
@@ -258,38 +274,27 @@ public final class DynamicSubtitleLayout {
                     scratchSpotlights.add(new BattlefieldClusterLOD.SpotlightZone(event.x(), event.y(), event.z(), event.soundId()));
                 }
             }
-            if (eligible.isEmpty()) {
+            if (eligible.isEmpty() && !hasActiveClusters) {
                 clearFrameScratch();
                 lastWork = budget.counts();
                 return List.of();
             }
 
-            // Battlefield clustering & Macro-LOD pass:
+            // Battlefield clustering & Macro-LOD pass (stateful continuity + cross-boundary absorption):
             List<SubtitlePool.Subtitle> candidatesForLayout = eligible;
-            if (BattlefieldClusterLOD.hasPotentialCluster(eligible)) {
-                var battlefield = BattlefieldClusterLOD.processSubtitles(eligible);
-                if (battlefield.hasClusters()) {
-                    scratchClusteredCandidates.clear();
-                    scratchClusterIds.clear();
-                    var clusters = battlefield.clusters();
-                    for (int i = 0, csize = clusters.size(); i < csize; i++) {
-                        var cluster = clusters.get(i);
-                        var sub = BattlefieldClusterLOD.createClusterSubtitle(cluster, now);
-                        if (sub != null) {
-                            scratchClusteredCandidates.add(sub);
-                        }
-                        var members = cluster.members();
-                        for (int m = 0, msize = members.size(); m < msize; m++) {
-                            scratchClusterIds.add(members.get(m).id());
-                        }
-                    }
-                    for (int i = 0, esize = eligible.size(); i < esize; i++) {
-                        var sub = eligible.get(i);
-                        if (!scratchClusterIds.contains(sub.id())) {
-                            scratchClusteredCandidates.add(sub);
-                        }
-                    }
-                    candidatesForLayout = scratchClusteredCandidates;
+            if (hasActiveClusters
+                    || BattlefieldClusterLOD.hasPotentialCluster(
+                            eligible, BattlefieldClusterLOD.DEFAULT_PROMOTION_THRESHOLD, DynamicSubtitleLayout::clusterGroupKey)) {
+                candidatesForLayout = clusterTracker.resolve(
+                        eligible,
+                        now,
+                        BattlefieldClusterLOD.DEFAULT_PROMOTION_THRESHOLD,
+                        DynamicSubtitleLayout::clusterGroupKey,
+                        scratchClusteredCandidates);
+                if (candidatesForLayout.isEmpty()) {
+                    clearFrameScratch();
+                    lastWork = budget.counts();
+                    return List.of();
                 }
             }
 
@@ -361,7 +366,10 @@ public final class DynamicSubtitleLayout {
             boolean isBold = customRule != null && customRule.bold() != null ? customRule.bold() : type.isBold();
             boolean isItalic = customRule != null && customRule.italic() != null ? customRule.italic() : type.isItalic();
             CaptionTextCache.Text text;
-            if (event.soundId().startsWith("onomixel.chorus.")) {
+            if (BattlefieldClusterLOD.isClusterSubtitle(event) && event.repeatCount() > 1) {
+                text = texts.get(minecraft, event.translationKey(), isBold, isItalic,
+                        null, BattlefieldClusterLOD.MultiplierBadge.formatSuffix(event.repeatCount()));
+            } else if (event.soundId().startsWith("onomixel.chorus.")) {
                 int badgeIdx = event.translationKey().lastIndexOf(" ×");
                 String suffix = badgeIdx >= 0 ? event.translationKey().substring(badgeIdx) : null;
                 text = texts.get(minecraft, event.soundId(), isBold, isItalic, null, suffix);
