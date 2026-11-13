@@ -48,11 +48,18 @@ public final class DynamicSubtitleLayout {
     public static final double PIVOT_MIN_EYE_DISTANCE_SQ = 0.85 * 0.85;
     public static final double PIVOT_FORWARD_PUSH = 0.90;
 
+    static final long RAY_CACHE_TTL_NANOS = RayCachePolicy.RAY_CACHE_TTL_NANOS;
+    static final double RAY_EYE_MOVE_SQ = RayCachePolicy.RAY_EYE_MOVE_SQ;
+    static final double RAY_TARGET_MOVE_SQ = RayCachePolicy.RAY_TARGET_MOVE_SQ;
+    static final double RAY_LOOK_COS_THRESHOLD = RayCachePolicy.RAY_LOOK_COS_THRESHOLD;
+    private static final LayoutBudget.Counts ZERO_COUNTS = new LayoutBudget.Counts(0, 0, 0, 0);
+
     private final Map<Long, State> states = new HashMap<>();
     private final CaptionTextCache texts;
     private ClientLevel level;
     private long frame;
-    private LayoutBudget.Counts lastWork = new LayoutBudget.Counts(0, 0, 0, 0);
+    private LayoutBudget.Counts lastWork = ZERO_COUNTS;
+    private final LayoutBudget budget = new LayoutBudget(12);
     private final List<BillboardProjection.Bounds> scratchOtherBounds = new ArrayList<>(32);
     private final double[] scratchScores = new double[16];
     private final double[] scratchRawScores = new double[16];
@@ -60,7 +67,20 @@ public final class DynamicSubtitleLayout {
     private final Set<Long> scratchLiveIds = new HashSet<>(32);
     private final List<SubtitlePool.Subtitle> scratchEligible = new ArrayList<>(32);
     private final List<LayoutBudget.Candidate> scratchPreparation = new ArrayList<>(32);
+    private final Set<Long> scratchPrepared = new HashSet<>(32);
+    private final List<LayoutBudget.Candidate> scratchShortlistRest = new ArrayList<>(32);
+    private final Set<Long> scratchClusterIds = new HashSet<>(16);
+    private final List<SubtitlePool.Subtitle> scratchClusteredCandidates = new ArrayList<>(32);
     private final List<BattlefieldClusterLOD.SpotlightZone> scratchSpotlights = new ArrayList<>(8);
+    private final List<Job> scratchJobs = new ArrayList<>(24);
+    private final List<BillboardProjection.Bounds> scratchModels = new ArrayList<>(24);
+    private final Map<Long, BillboardProjection.Bounds> scratchOccupied = new HashMap<>(32);
+    private final Map<Long, BillboardProjection.Bounds> scratchRepulsionBounds = new HashMap<>(32);
+    private final List<LayoutScheduler.Work> scratchWork = new ArrayList<>(24);
+    private final List<Placed> scratchPlaced = new ArrayList<>(16);
+    private int lastVpWidth = -1;
+    private int lastVpHeight = -1;
+    private CrosshairComfortZone cachedCrosshairZone;
 
     public DynamicSubtitleLayout() { this(new CaptionTextCache()); }
     DynamicSubtitleLayout(CaptionTextCache texts) { this.texts = texts; }
@@ -73,6 +93,23 @@ public final class DynamicSubtitleLayout {
         long lastSolve = Long.MIN_VALUE / 2;
         long switchedAt, lastFrame, firstShown, drawnFrame = -1;
         CaptionRepulsion.RepulsionOffset repulsion = CaptionRepulsion.RepulsionOffset.ZERO;
+        Source cachedSource;
+        String cachedSourceSoundId;
+        double cachedSourceX, cachedSourceY, cachedSourceZ;
+        long cachedSourceNanos = Long.MIN_VALUE / 2;
+        boolean cachedDarkAmbient;
+        long cachedDarkAmbientNanos = Long.MIN_VALUE / 2;
+        double cachedDarkX, cachedDarkY, cachedDarkZ;
+        long sourceRayNanos = Long.MIN_VALUE / 2;
+        double sourceRayEyeX, sourceRayEyeY, sourceRayEyeZ;
+        double sourceRayTargetX, sourceRayTargetY, sourceRayTargetZ;
+        boolean sourceRayClear;
+        long finalRayNanos = Long.MIN_VALUE / 2;
+        int finalRaySlot = -1;
+        double finalRayEyeX, finalRayEyeY, finalRayEyeZ;
+        double finalRayTargetX, finalRayTargetY, finalRayTargetZ;
+        double finalRayLookX, finalRayLookY, finalRayLookZ;
+        boolean finalRayClear;
     }
 
     /**
@@ -113,13 +150,30 @@ public final class DynamicSubtitleLayout {
     public void clear() {
         states.clear();
         level = null;
-        lastWork = new LayoutBudget.Counts(0, 0, 0, 0);
+        lastWork = ZERO_COUNTS;
+        lastVpWidth = -1;
+        lastVpHeight = -1;
+        cachedCrosshairZone = null;
+        clearFrameScratch();
+    }
+
+    private void clearFrameScratch() {
         scratchOtherBounds.clear();
         scratchRouteObstacles.clear();
         scratchLiveIds.clear();
         scratchEligible.clear();
         scratchPreparation.clear();
+        scratchPrepared.clear();
+        scratchShortlistRest.clear();
+        scratchClusterIds.clear();
+        scratchClusteredCandidates.clear();
         scratchSpotlights.clear();
+        scratchJobs.clear();
+        scratchModels.clear();
+        scratchOccupied.clear();
+        scratchRepulsionBounds.clear();
+        scratchWork.clear();
+        scratchPlaced.clear();
     }
 
     public List<Placed> layout(Minecraft minecraft, SubtitlePool pool, CameraRenderState camera, long now) {
@@ -129,21 +183,39 @@ public final class DynamicSubtitleLayout {
     public List<Placed> layout(Minecraft minecraft, SubtitlePool pool, CameraRenderState camera, long now, CaptionSettings settings) {
         if (level != minecraft.level) { states.clear(); level = minecraft.level; }
         if (level == null || !camera.initialized) return List.of();
-        try (var scope = GeometrySlotRing.openScope()) {
-            frame++;
-            BossChoreographyDirector.getInstance().cleanExpiredFields(now);
+        frame++;
+        BossChoreographyDirector.getInstance().cleanExpiredFields(now);
+        var activeSubtitles = pool.activeView();
+        if (activeSubtitles.isEmpty() && states.isEmpty()) {
+            lastWork = ZERO_COUNTS;
+            return List.of();
+        }
+        scratchLiveIds.clear();
+        for (int i = 0, size = activeSubtitles.size(); i < size; i++) {
+            scratchLiveIds.add(activeSubtitles.get(i).id());
+        }
+        states.keySet().removeIf(id -> (id > 0 && !scratchLiveIds.contains(id)) || (id < 0 && now - states.get(id).lastFrame > 2_000_000_000L));
+        if (activeSubtitles.isEmpty()) {
             scratchLiveIds.clear();
-            for (var subtitle : pool.activeView()) scratchLiveIds.add(subtitle.id());
-            states.keySet().removeIf(id -> (id > 0 && !scratchLiveIds.contains(id)) || (id < 0 && now - states.get(id).lastFrame > 2_000_000_000L));
+            lastWork = ZERO_COUNTS;
+            return List.of();
+        }
 
+        try (var scope = GeometrySlotRing.openScope()) {
             Vec3 eye = camera.pos;
             Point eyePoint = point(eye);
-            Point right = rotated(1, 0, 0, camera), up = rotated(0, 1, 0, camera), forward = rotated(0, 0, -1, camera);
+            Point right = rotated(1, 0, 0, camera, scope), up = rotated(0, 1, 0, camera, scope), forward = rotated(0, 0, -1, camera, scope);
             Matrix4f projection = scope.mat4(camera.projectionMatrix).mul(camera.viewRotationMatrix);
             var window = minecraft.getWindow();
-            var viewport = CaptionReadability.Viewport.pixels(window.getWidth(), window.getHeight(), window.getGuiScale());
-            CrosshairComfortZone crosshairZone = CrosshairComfortZone.forViewportNdc(
-                    window.getWidth(), window.getHeight(), 40.0, 80.0, 20.0);
+            int vpW = window.getWidth();
+            int vpH = window.getHeight();
+            var viewport = CaptionReadability.Viewport.pixels(vpW, vpH, window.getGuiScale());
+            if (cachedCrosshairZone == null || vpW != lastVpWidth || vpH != lastVpHeight) {
+                cachedCrosshairZone = CrosshairComfortZone.forViewportNdc(vpW, vpH, 40.0, 80.0, 20.0);
+                lastVpWidth = vpW;
+                lastVpHeight = vpH;
+            }
+            CrosshairComfortZone crosshairZone = cachedCrosshairZone;
             boolean isFirstPerson = minecraft.options != null && minecraft.options.getCameraType().isFirstPerson();
             FirstPersonWeaponMask.HandSide handSide = (minecraft.options != null && minecraft.player != null
                     && minecraft.player.getMainArm() == net.minecraft.world.entity.HumanoidArm.LEFT)
@@ -160,9 +232,11 @@ public final class DynamicSubtitleLayout {
             FirstPersonWeaponMask weaponMask = FirstPersonWeaponMask.createNdc(isFirstPerson, handSide, weaponState);
 
             int limit = settings.maxVisible();
-            LayoutBudget budget = new LayoutBudget(limit);
-            List<Job> jobs = new ArrayList<>();
-            List<BillboardProjection.Bounds> models = new ArrayList<>();
+            budget.reset(limit);
+            scratchJobs.clear();
+            scratchModels.clear();
+            List<Job> jobs = scratchJobs;
+            List<BillboardProjection.Bounds> models = scratchModels;
 
             // Cheap projection uses approximate source bounds, without block shapes or world rays.
             scratchEligible.clear();
@@ -184,61 +258,106 @@ public final class DynamicSubtitleLayout {
                     scratchSpotlights.add(new BattlefieldClusterLOD.SpotlightZone(event.x(), event.y(), event.z(), event.soundId()));
                 }
             }
+            if (eligible.isEmpty()) {
+                clearFrameScratch();
+                lastWork = budget.counts();
+                return List.of();
+            }
 
             // Battlefield clustering & Macro-LOD pass:
             List<SubtitlePool.Subtitle> candidatesForLayout = eligible;
-            int totalChorusWeight = 0;
-            for (int i = 0; i < eligible.size(); i++) {
-                totalChorusWeight += eligible.get(i).repeatCount();
-            }
-            if (totalChorusWeight >= BattlefieldClusterLOD.DEFAULT_PROMOTION_THRESHOLD) {
+            if (BattlefieldClusterLOD.hasPotentialCluster(eligible)) {
                 var battlefield = BattlefieldClusterLOD.processSubtitles(eligible);
                 if (battlefield.hasClusters()) {
-                    candidatesForLayout = new ArrayList<>();
-                    for (var cluster : battlefield.clusters()) {
+                    scratchClusteredCandidates.clear();
+                    scratchClusterIds.clear();
+                    var clusters = battlefield.clusters();
+                    for (int i = 0, csize = clusters.size(); i < csize; i++) {
+                        var cluster = clusters.get(i);
                         var sub = BattlefieldClusterLOD.createClusterSubtitle(cluster, now);
-                        if (sub != null) candidatesForLayout.add(sub);
-                    }
-                    Set<Long> clusteredIds = new HashSet<>();
-                    for (var cluster : battlefield.clusters()) {
-                        for (var member : cluster.members()) {
-                            clusteredIds.add(member.id());
+                        if (sub != null) {
+                            scratchClusteredCandidates.add(sub);
+                        }
+                        var members = cluster.members();
+                        for (int m = 0, msize = members.size(); m < msize; m++) {
+                            scratchClusterIds.add(members.get(m).id());
                         }
                     }
-                    for (var sub : eligible) {
-                        if (!clusteredIds.contains(sub.id())) {
-                            candidatesForLayout.add(sub);
+                    for (int i = 0, esize = eligible.size(); i < esize; i++) {
+                        var sub = eligible.get(i);
+                        if (!scratchClusterIds.contains(sub.id())) {
+                            scratchClusteredCandidates.add(sub);
                         }
                     }
+                    candidatesForLayout = scratchClusteredCandidates;
                 }
             }
 
-            scratchPreparation.clear();
-            List<LayoutBudget.Candidate> preparation = scratchPreparation;
-            for (var event : candidatesForLayout) {
-                State previous = states.get(event.id());
-                preparation.add(new LayoutBudget.Candidate(event.id(), previous != null && previous.drawnFrame == frame - 1));
+            Set<Long> prepared = scratchPrepared;
+            if (candidatesForLayout.size() <= budget.preparationLimit()) {
+                prepared.clear();
+                for (int i = 0, csize = candidatesForLayout.size(); i < csize; i++) {
+                    prepared.add(candidatesForLayout.get(i).id());
+                }
+            } else {
+                scratchPreparation.clear();
+                for (int i = 0, csize = candidatesForLayout.size(); i < csize; i++) {
+                    var event = candidatesForLayout.get(i);
+                    State previous = states.get(event.id());
+                    scratchPreparation.add(new LayoutBudget.Candidate(event.id(), previous != null && previous.drawnFrame == frame - 1));
+                }
+                budget.shortlistInto(scratchPreparation, limit, frame, prepared, scratchShortlistRest);
             }
-            Set<Long> prepared = budget.shortlist(preparation, limit, frame);
 
             // Prepare only sources which could actually be drawn. Hidden/offscreen/faded events spend no search tickets.
-            for (var event : candidatesForLayout) {
+            for (int cIdx = 0, csize = candidatesForLayout.size(); cIdx < csize; cIdx++) {
+            var event = candidatesForLayout.get(cIdx);
             if (!prepared.contains(event.id()) || !budget.prepare()) continue;
-            Source source = source(event);
+            State existingState = states.get(event.id());
+            Source source = resolveSource(existingState, event, now);
             var sourceBounds = projectBox(source.body, eye, projection);
-            if (sourceBounds == null || !sourceBounds.intersectsScreen()
-                    || !budget.sourceRay() || !SpatialAnchorResolver.clear(minecraft, eye, vec(source.emitter), source.ignoredBlock)) continue;
-            State state = states.computeIfAbsent(event.id(), ignored -> new State());
-            var type = CaptionVisuals.type(event.soundId());
+            if (sourceBounds == null || !sourceBounds.intersectsScreen() || !budget.sourceRay()) continue;
+            if (existingState == null) {
+                existingState = new State();
+                existingState.lastFrame = now;
+                existingState.cachedSource = source;
+                existingState.cachedSourceSoundId = event.soundId();
+                existingState.cachedSourceX = event.sourceX();
+                existingState.cachedSourceY = event.sourceY();
+                existingState.cachedSourceZ = event.sourceZ();
+                existingState.cachedSourceNanos = now;
+                states.put(event.id(), existingState);
+            }
+            State state = existingState;
+            boolean sourceClear;
+            if (shouldReuseRayCheck(now, state.sourceRayNanos,
+                    eye.x, eye.y, eye.z, state.sourceRayEyeX, state.sourceRayEyeY, state.sourceRayEyeZ,
+                    source.emitter.x(), source.emitter.y(), source.emitter.z(),
+                    state.sourceRayTargetX, state.sourceRayTargetY, state.sourceRayTargetZ,
+                    0, 0, 0, 0, 0, 0, false)) {
+                sourceClear = state.sourceRayClear;
+            } else {
+                sourceClear = SpatialAnchorResolver.clear(minecraft, eye, vec(source.emitter), source.ignoredBlock);
+                state.sourceRayNanos = now;
+                state.sourceRayEyeX = eye.x;
+                state.sourceRayEyeY = eye.y;
+                state.sourceRayEyeZ = eye.z;
+                state.sourceRayTargetX = source.emitter.x();
+                state.sourceRayTargetY = source.emitter.y();
+                state.sourceRayTargetZ = source.emitter.z();
+                state.sourceRayClear = sourceClear;
+            }
+            if (!sourceClear) continue;
+            CustomWordRule customRule = SoundCustomizationManager.resolve(event.soundId());
+            var type = CaptionVisuals.type(event.soundId(), customRule);
             double age = state.motion == null ? 0 : (now - state.firstShown) / 1_000_000_000.0;
             double trigger = (now - event.triggeredNanos()) / 1_000_000_000.0;
             if (submerged) {
                 age *= 0.5;
                 trigger *= 0.5;
             }
-            var effect = CaptionVisuals.sample(type, event.soundId(), age, trigger, event.id(), settings.style(),
-                    settings.aestheticStyle(), settings.colorblindMode());
-            CustomWordRule customRule = SoundCustomizationManager.resolve(event.soundId());
+            var effect = CaptionVisuals.sample(type, event.soundId(), customRule, age, trigger, event.id(),
+                    settings.style(), settings.aestheticStyle(), settings.colorblindMode());
             boolean isBold = customRule != null && customRule.bold() != null ? customRule.bold() : type.isBold();
             boolean isItalic = customRule != null && customRule.italic() != null ? customRule.italic() : type.isItalic();
             CaptionTextCache.Text text;
@@ -250,11 +369,10 @@ public final class DynamicSubtitleLayout {
                 text = texts.get(minecraft, event.translationKey(), isBold, isItalic);
             }
             text = texts.animate(text, settings.kineticTypography()
-                    ? KineticTypography.resolveMode(type.id(), event.soundId()) : KineticTypography.Mode.NONE, age);
+                    ? KineticTypography.resolveMode(type.id(), event.soundId(), customRule) : KineticTypography.Mode.NONE, age);
             Size size = new Size(text.halfWidth() + 2, text.halfHeight() + 2);
             boolean ambient = event.semantics() == SoundSemantics.AMBIENT || event.semantics() == SoundSemantics.IDLE_VOICE;
-            boolean darkAmbient = ambient && level.getRawBrightness(BlockPos.containing(
-                    event.sourceX(), event.sourceY(), event.sourceZ()), 0) <= 4;
+            boolean darkAmbient = resolveDarkAmbient(state, ambient, event.sourceX(), event.sourceY(), event.sourceZ(), now);
             // Reserve the largest pop and tilt envelope rather than just the unanimated baseline.
             var envelope = type.motionEnvelope();
             var reserved = CaptionGeometry.reserve(size.halfWidth, size.halfHeight, envelope);
@@ -307,13 +425,20 @@ public final class DynamicSubtitleLayout {
             List<Point> points = CaptionPlacement.aroundSource(pivot, toward, right, up, push,
                     horizontal, above, below,
                     (event.id() & 1) == 0 ? 1 : -1);
-            List<BillboardProjection.Bounds> silhouettes = new ArrayList<>();
-            for (AABB part : source.parts) {
-                var bounds = projectBox(part, eye, projection);
-                if (bounds != null) silhouettes.add(padded(bounds, viewport));
+            List<BillboardProjection.Bounds> silhouettes;
+            if (source.parts.size() == 1) {
+                var bounds = projectBox(source.parts.get(0), eye, projection);
+                silhouettes = bounds != null ? List.of(padded(bounds, viewport)) : List.of();
+            } else {
+                silhouettes = new ArrayList<>(source.parts.size());
+                for (int p = 0, psize = source.parts.size(); p < psize; p++) {
+                    var bounds = projectBox(source.parts.get(p), eye, projection);
+                    if (bounds != null) silhouettes.add(padded(bounds, viewport));
+                }
             }
-            List<BillboardProjection.Bounds> slots = new ArrayList<>();
-            for (Point candidate : points) {
+            List<BillboardProjection.Bounds> slots = new ArrayList<>(points.size());
+            for (int p = 0, psize = points.size(); p < psize; p++) {
+                Point candidate = points.get(p);
                 var transform = resolve(event, size, effect, candidate, darkAmbient, context,
                         CaptionRepulsion.RepulsionOffset.ZERO, hitstopEligible, extraScale);
                 slots.add(enclose(project(transform.point(), reserve, transform.baseScale(), camera, projection),
@@ -324,10 +449,18 @@ public final class DynamicSubtitleLayout {
             models.addAll(silhouettes);
         }
 
+        if (jobs.isEmpty()) {
+            lastWork = budget.counts();
+            clearFrameScratch();
+            return List.of();
+        }
+
         // Reproject all previously drawn text, including captions later in distance order. Never reserve oneself.
-        Map<Long, BillboardProjection.Bounds> occupied = new HashMap<>();
-        List<LayoutScheduler.Work> work = new ArrayList<>();
-        for (int i = 0; i < jobs.size(); i++) {
+        Map<Long, BillboardProjection.Bounds> occupied = scratchOccupied;
+        occupied.clear();
+        List<LayoutScheduler.Work> work = scratchWork;
+        work.clear();
+        for (int i = 0, jsize = jobs.size(); i < jsize; i++) {
             Job job = jobs.get(i);
             State state = job.state;
             if (state.motion != null && state.slot >= 0) {
@@ -346,112 +479,121 @@ public final class DynamicSubtitleLayout {
         Set<Long> tickets = LayoutScheduler.select(work, limit, now);
 
         // Solve all allocated jobs before applying the drawing limit, so later tickets cannot be discarded by a break.
-        for (int jobIndex = 0; jobIndex < jobs.size(); jobIndex++) {
-            Job job = jobs.get(jobIndex);
-            if (!tickets.contains(job.event.id())) continue;
-            State state = job.state;
-            collectOtherBounds(occupied, job.event.id(), scratchOtherBounds);
-            int numPoints = job.points.size();
-            double[] scores = numPoints <= scratchScores.length ? scratchScores : new double[numPoints];
-            double[] rawScores = numPoints <= scratchRawScores.length ? scratchRawScores : new double[numPoints];
-            java.util.Arrays.fill(scores, 0, numPoints, Double.POSITIVE_INFINITY);
-            java.util.Arrays.fill(rawScores, 0, numPoints, Double.POSITIVE_INFINITY);
-            int best = -1;
-            double bestScore = Double.POSITIVE_INFINITY;
-            boolean selfHurt = isSelfHurt(job.event.soundId(), Math.sqrt(job.pivot.distanceSquared(eyePoint)));
-            for (int slot = 0; slot < numPoints; slot++) {
-                Point candidate = job.points.get(slot);
-                if (!CaptionReadability.fullyOnScreen(job.slotBounds.get(slot))) continue;
-                double score = CaptionReadability.score(job.slotBounds.get(slot), models, scratchOtherBounds, viewport,
-                        candidate.distanceSquared(job.pivot));
-                var sb = job.slotBounds.get(slot);
-                var zone = crosshairZone.zoneOf(sb);
-                if (zone == CrosshairComfortZone.Zone.CORE) {
-                    if (selfHurt) {
-                        continue;
-                    }
-                    score += SCORE_PENALTY_CROSSHAIR_CORE;
-                } else if (zone == CrosshairComfortZone.Zone.BUFFER) {
-                    score += selfHurt ? SCORE_PENALTY_CROSSHAIR_BUFFER : SCORE_PENALTY_BUFFER_DEFAULT;
-                }
-                if (weaponMask.intersects(sb)) {
-                    score += SCORE_PENALTY_WEAPON_MASK;
-                }
-                score += job.type.slotScoreBonus(slot);
-                if (slot == 1) score += 0.08;
-                double deltaY = job.event.y() - eyePoint.y();
-                if (deltaY >= 2.5 && (slot == 2 || slot == 3 || slot == 4)) {
-                    score -= 0.15;
-                } else if (deltaY <= -2.5 && slot == 5) {
-                    score -= 0.15;
-                }
-                if (Double.isFinite(score)) {
-                    rawScores[slot] = score;
-                }
-            }
-            if (state.slot >= 0 && state.slot < numPoints && Double.isFinite(rawScores[state.slot])) {
-                int curSlot = state.slot;
-                var transform = resolve(job, job.points.get(curSlot), context, 0);
-                if (transform.point().distanceSquared(eyePoint) >= 0.65 * 0.65
-                        && budget.searchRays(6)
-                        && reachable(minecraft, eye, job.source, transform, camera)) {
-                    scores[curSlot] = rawScores[curSlot];
-                    best = curSlot;
-                    bestScore = rawScores[curSlot];
-                }
-                rawScores[curSlot] = Double.POSITIVE_INFINITY;
-            }
-            while (true) {
-                int candidateSlot = -1;
-                double minRaw = bestScore;
+        if (!tickets.isEmpty()) {
+            for (int jobIndex = 0, jsize = jobs.size(); jobIndex < jsize; jobIndex++) {
+                Job job = jobs.get(jobIndex);
+                if (!tickets.contains(job.event.id())) continue;
+                State state = job.state;
+                state.finalRayNanos = Long.MIN_VALUE / 2;
+                collectOtherBounds(occupied, job.event.id(), scratchOtherBounds);
+                int numPoints = job.points.size();
+                double[] scores = numPoints <= scratchScores.length ? scratchScores : new double[numPoints];
+                double[] rawScores = numPoints <= scratchRawScores.length ? scratchRawScores : new double[numPoints];
+                java.util.Arrays.fill(scores, 0, numPoints, Double.POSITIVE_INFINITY);
+                java.util.Arrays.fill(rawScores, 0, numPoints, Double.POSITIVE_INFINITY);
+                int best = -1;
+                double bestScore = Double.POSITIVE_INFINITY;
+                boolean selfHurt = isSelfHurt(job.event.soundId(), Math.sqrt(job.pivot.distanceSquared(eyePoint)));
                 for (int slot = 0; slot < numPoints; slot++) {
-                    if (rawScores[slot] < minRaw) {
-                        minRaw = rawScores[slot];
-                        candidateSlot = slot;
+                    Point candidate = job.points.get(slot);
+                    if (!CaptionReadability.fullyOnScreen(job.slotBounds.get(slot))) continue;
+                    double score = CaptionReadability.score(job.slotBounds.get(slot), models, scratchOtherBounds, viewport,
+                            candidate.distanceSquared(job.pivot));
+                    var sb = job.slotBounds.get(slot);
+                    var zone = crosshairZone.zoneOf(sb);
+                    if (zone == CrosshairComfortZone.Zone.CORE) {
+                        if (selfHurt) {
+                            continue;
+                        }
+                        score += SCORE_PENALTY_CROSSHAIR_CORE;
+                    } else if (zone == CrosshairComfortZone.Zone.BUFFER) {
+                        score += selfHurt ? SCORE_PENALTY_CROSSHAIR_BUFFER : SCORE_PENALTY_BUFFER_DEFAULT;
+                    }
+                    if (weaponMask.intersects(sb)) {
+                        score += SCORE_PENALTY_WEAPON_MASK;
+                    }
+                    score += job.type.slotScoreBonus(slot);
+                    if (slot == 1) score += 0.08;
+                    double deltaY = job.event.y() - eyePoint.y();
+                    if (deltaY >= 2.5 && (slot == 2 || slot == 3 || slot == 4)) {
+                        score -= 0.15;
+                    } else if (deltaY <= -2.5 && slot == 5) {
+                        score -= 0.15;
+                    }
+                    if (Double.isFinite(score)) {
+                        rawScores[slot] = score;
                     }
                 }
-                if (candidateSlot < 0) break;
-                rawScores[candidateSlot] = Double.POSITIVE_INFINITY;
-                var transform = resolve(job, job.points.get(candidateSlot), context, 0);
-                if (transform.point().distanceSquared(eyePoint) < 0.65 * 0.65
-                        || !budget.searchRays(6)
-                        || !reachable(minecraft, eye, job.source, transform, camera)) continue;
-                scores[candidateSlot] = minRaw;
-                best = candidateSlot;
-                bestScore = minRaw;
-                break;
-            }
-            state.lastSolve = now;
-            if (best < 0) {
-                state.target = null;
-                state.slot = -1;
-                occupied.remove(job.event.id());
-                continue;
-            }
-            double currentScore = state.slot < 0 ? Double.POSITIVE_INFINITY : scores[state.slot];
-            if (state.slot >= 0 && CaptionReadability.needsEscape(job.slotBounds.get(state.slot), viewport)
-                    && !CaptionReadability.needsEscape(job.slotBounds.get(best), viewport)) currentScore = Double.POSITIVE_INFINITY;
-            int selected = SmoothAnchor.stableSlot(state.slot, best, currentScore, bestScore,
-                    (now - state.switchedAt) / 1_000_000_000.0);
-            if (selected != state.slot) state.switchedAt = now;
-            state.slot = selected;
-            state.target = job.points.get(selected);
-            if (state.motion == null) {
-                state.motion = new SmoothAnchor(state.target);
-                state.firstShown = now;
-                state.lastFrame = now;
-            }
-            if (state.drawnFrame == frame - 1 || jobIndex < limit) {
-                occupied.put(job.event.id(), resolve(job, state.motion.position(), context, state.repulsion)
-                        .project(eyePoint, camera.orientation, projection));
+                if (state.slot >= 0 && state.slot < numPoints && Double.isFinite(rawScores[state.slot])) {
+                    int curSlot = state.slot;
+                    var transform = resolve(job, job.points.get(curSlot), context, 0);
+                    if (transform.point().distanceSquared(eyePoint) >= 0.65 * 0.65
+                            && budget.searchRays(6)
+                            && reachable(minecraft, eye, job.source, transform, camera)) {
+                        scores[curSlot] = rawScores[curSlot];
+                        best = curSlot;
+                        bestScore = rawScores[curSlot];
+                    }
+                    rawScores[curSlot] = Double.POSITIVE_INFINITY;
+                }
+                while (true) {
+                    int candidateSlot = -1;
+                    double minRaw = bestScore;
+                    for (int slot = 0; slot < numPoints; slot++) {
+                        if (rawScores[slot] < minRaw) {
+                            minRaw = rawScores[slot];
+                            candidateSlot = slot;
+                        }
+                    }
+                    if (candidateSlot < 0) break;
+                    rawScores[candidateSlot] = Double.POSITIVE_INFINITY;
+                    var transform = resolve(job, job.points.get(candidateSlot), context, 0);
+                    if (transform.point().distanceSquared(eyePoint) < 0.65 * 0.65
+                            || !budget.searchRays(6)
+                            || !reachable(minecraft, eye, job.source, transform, camera)) continue;
+                    scores[candidateSlot] = minRaw;
+                    best = candidateSlot;
+                    bestScore = minRaw;
+                    break;
+                }
+                state.lastSolve = now;
+                if (best < 0) {
+                    state.target = null;
+                    state.slot = -1;
+                    occupied.remove(job.event.id());
+                    continue;
+                }
+                double currentScore = state.slot < 0 ? Double.POSITIVE_INFINITY : scores[state.slot];
+                if (state.slot >= 0 && CaptionReadability.needsEscape(job.slotBounds.get(state.slot), viewport)
+                        && !CaptionReadability.needsEscape(job.slotBounds.get(best), viewport)) currentScore = Double.POSITIVE_INFINITY;
+                int selected = SmoothAnchor.stableSlot(state.slot, best, currentScore, bestScore,
+                        (now - state.switchedAt) / 1_000_000_000.0);
+                if (selected != state.slot) state.switchedAt = now;
+                state.slot = selected;
+                state.target = job.points.get(selected);
+                if (state.motion == null) {
+                    state.motion = new SmoothAnchor(state.target);
+                    state.firstShown = now;
+                    state.lastFrame = now;
+                }
+                if (state.drawnFrame == frame - 1 || jobIndex < limit) {
+                    occupied.put(job.event.id(), resolve(job, state.motion.position(), context, state.repulsion)
+                            .project(eyePoint, camera.orientation, projection));
+                }
             }
         }
 
-        List<Placed> result = new ArrayList<>();
+        List<Placed> result = scratchPlaced;
+        result.clear();
         // Every caption reads the same frame snapshot for soft repulsion, independent of draw order.
-        Map<Long, BillboardProjection.Bounds> repulsionBounds = new HashMap<>(occupied);
+        Map<Long, BillboardProjection.Bounds> repulsionBounds = scratchRepulsionBounds;
+        repulsionBounds.clear();
+        if (!occupied.isEmpty()) {
+            repulsionBounds.putAll(occupied);
+        }
         int rainCount = 0;
-        for (Job job : jobs) {
+        for (int jIdx = 0, jsize = jobs.size(); jIdx < jsize; jIdx++) {
+            Job job = jobs.get(jIdx);
             State state = job.state;
             if (state.motion == null || state.target == null || state.slot < 0) continue;
             boolean rain = SoundEventPolicy.isRain(job.event.soundId());
@@ -476,6 +618,7 @@ public final class DynamicSubtitleLayout {
                 // A wall changed during the animation. Re-anchor while hidden and request a fresh safe slot.
                 state.motion.reset(state.target);
                 state.lastSolve = Long.MIN_VALUE / 2;
+                state.finalRayNanos = Long.MIN_VALUE / 2;
                 occupied.remove(job.event.id());
                 continue;
             }
@@ -485,10 +628,36 @@ public final class DynamicSubtitleLayout {
                     unrepelled.project(eyePoint, camera.orientation, projection), repulsionBounds,
                     crosshairZone, weaponMask), elapsed);
             var transform = resolve(job, position, context, state.repulsion);
-            if (!reachable(minecraft, eye, job.source, transform, camera)) {
-                state.lastSolve = Long.MIN_VALUE / 2;
-                occupied.remove(job.event.id());
-                continue;
+            boolean canReuseFinalRay = state.finalRayClear
+                    && state.finalRaySlot == state.slot
+                    && shouldReuseRayCheck(now, state.finalRayNanos,
+                            eye.x, eye.y, eye.z, state.finalRayEyeX, state.finalRayEyeY, state.finalRayEyeZ,
+                            transform.point().x(), transform.point().y(), transform.point().z(),
+                            state.finalRayTargetX, state.finalRayTargetY, state.finalRayTargetZ,
+                            forward.x(), forward.y(), forward.z(),
+                            state.finalRayLookX, state.finalRayLookY, state.finalRayLookZ,
+                            true);
+            if (!canReuseFinalRay) {
+                boolean isReachable = reachable(minecraft, eye, job.source, transform, camera);
+                if (!isReachable) {
+                    state.lastSolve = Long.MIN_VALUE / 2;
+                    state.finalRayNanos = Long.MIN_VALUE / 2;
+                    state.finalRayClear = false;
+                    occupied.remove(job.event.id());
+                    continue;
+                }
+                state.finalRayNanos = now;
+                state.finalRaySlot = state.slot;
+                state.finalRayEyeX = eye.x;
+                state.finalRayEyeY = eye.y;
+                state.finalRayEyeZ = eye.z;
+                state.finalRayTargetX = transform.point().x();
+                state.finalRayTargetY = transform.point().y();
+                state.finalRayTargetZ = transform.point().z();
+                state.finalRayLookX = forward.x();
+                state.finalRayLookY = forward.y();
+                state.finalRayLookZ = forward.z();
+                state.finalRayClear = true;
             }
             var rectangle = transform.project(eyePoint, camera.orientation, projection);
             collectOtherBounds(occupied, job.event.id(), scratchOtherBounds);
@@ -504,13 +673,9 @@ public final class DynamicSubtitleLayout {
             if (result.size() == limit) break;
         }
         lastWork = budget.counts();
-        scratchOtherBounds.clear();
-        scratchRouteObstacles.clear();
-        scratchEligible.clear();
-        scratchPreparation.clear();
-        scratchLiveIds.clear();
-        scratchSpotlights.clear();
-        return List.copyOf(result);
+        List<Placed> immutableResult = result.isEmpty() ? List.of() : List.copyOf(result);
+        clearFrameScratch();
+        return immutableResult;
         }
     }
 
@@ -554,6 +719,68 @@ public final class DynamicSubtitleLayout {
             case DEFAULT -> SoundSourceProfile.height(event.soundId(), event.category());
             default -> 0;
         };
+    }
+
+    static boolean shouldReuseRayCheck(
+            long now, long cachedNanos,
+            double eyeX, double eyeY, double eyeZ,
+            double cachedEyeX, double cachedEyeY, double cachedEyeZ,
+            double targetX, double targetY, double targetZ,
+            double cachedTargetX, double cachedTargetY, double cachedTargetZ,
+            double lookX, double lookY, double lookZ,
+            double cachedLookX, double cachedLookY, double cachedLookZ,
+            boolean checkLook
+    ) {
+        return RayCachePolicy.shouldReuse(
+                now, cachedNanos,
+                eyeX, eyeY, eyeZ, cachedEyeX, cachedEyeY, cachedEyeZ,
+                targetX, targetY, targetZ, cachedTargetX, cachedTargetY, cachedTargetZ,
+                lookX, lookY, lookZ, cachedLookX, cachedLookY, cachedLookZ,
+                checkLook
+        );
+    }
+
+    private Source resolveSource(State state, SubtitlePool.Subtitle event, long now) {
+        if (state != null && state.cachedSource != null
+                && now >= state.cachedSourceNanos
+                && now - state.cachedSourceNanos < RAY_CACHE_TTL_NANOS
+                && state.cachedSourceX == event.sourceX()
+                && state.cachedSourceY == event.sourceY()
+                && state.cachedSourceZ == event.sourceZ()
+                && java.util.Objects.equals(state.cachedSourceSoundId, event.soundId())) {
+            return state.cachedSource;
+        }
+        Source resolved = source(event);
+        if (state != null) {
+            state.cachedSource = resolved;
+            state.cachedSourceSoundId = event.soundId();
+            state.cachedSourceX = event.sourceX();
+            state.cachedSourceY = event.sourceY();
+            state.cachedSourceZ = event.sourceZ();
+            state.cachedSourceNanos = now;
+        }
+        return resolved;
+    }
+
+    private boolean resolveDarkAmbient(State state, boolean ambient, double x, double y, double z, long now) {
+        if (!ambient) {
+            return false;
+        }
+        if (state.cachedDarkAmbientNanos != Long.MIN_VALUE / 2
+                && now >= state.cachedDarkAmbientNanos
+                && now - state.cachedDarkAmbientNanos < RAY_CACHE_TTL_NANOS
+                && state.cachedDarkX == x
+                && state.cachedDarkY == y
+                && state.cachedDarkZ == z) {
+            return state.cachedDarkAmbient;
+        }
+        boolean dark = level.getRawBrightness(BlockPos.containing(x, y, z), 0) <= 4;
+        state.cachedDarkAmbient = dark;
+        state.cachedDarkAmbientNanos = now;
+        state.cachedDarkX = x;
+        state.cachedDarkY = y;
+        state.cachedDarkZ = z;
+        return dark;
     }
 
     private Source source(SubtitlePool.Subtitle event) {
@@ -647,7 +874,7 @@ public final class DynamicSubtitleLayout {
             point = point.plus(frame.forward, -0.08);
         } else if (event.semantics() == SoundSemantics.ATTACK || event.semantics() == SoundSemantics.DAMAGE) {
             double divisor = Math.max(0.5, Math.sqrt(dx * dx + dz * dz));
-            point = point.plus(new Point(dx / divisor, 0, dz / divisor), 0.10);
+            point = new Point(point.x() + (dx / divisor) * 0.10, point.y(), point.z() + (dz / divisor) * 0.10);
         }
         if (frame.submerged) {
             int tintedRgb = AcousticEnvironmentReactor.tintHydrological(effect.rgb(), 0x3F76E4);
@@ -699,8 +926,8 @@ public final class DynamicSubtitleLayout {
         return (Math.abs(direction.x()) * (box.maxX - box.minX) + Math.abs(direction.y()) * (box.maxY - box.minY)
                 + Math.abs(direction.z()) * (box.maxZ - box.minZ)) / 2;
     }
-    private static Point rotated(float x, float y, float z, CameraRenderState camera) {
-        var vector = new Vector3f(x, y, z).rotate(camera.orientation);
+    private static Point rotated(float x, float y, float z, CameraRenderState camera, GeometrySlotRing.Scope scope) {
+        var vector = scope.vec3(x, y, z).rotate(camera.orientation);
         return new Point(vector.x, vector.y, vector.z);
     }
     private static Point direction(Point from, Point to) {

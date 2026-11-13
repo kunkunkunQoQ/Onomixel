@@ -9,6 +9,7 @@ import dev.kunkun.onomixel.subtitle.SubtitleClock;
 import dev.kunkun.onomixel.custom.CustomWordRule;
 import dev.kunkun.onomixel.custom.SoundCustomizationManager;
 import dev.kunkun.onomixel.subtitle.SubtitlePool;
+import dev.kunkun.onomixel.subtitle.ThreatRegistry;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -48,8 +49,18 @@ public final class ClientSoundCapture {
     );
     private static final StackWalker SOUND_CALLER = StackWalker.getInstance();
     private ClientLevel currentLevel;
-    private CaptionSettings settings = CaptionSettings.defaults();
+    private volatile CaptionSettings settings = CaptionSettings.defaults();
     private volatile long lastActiveNanos;
+    private boolean worldStateCleared = true;
+
+    /**
+     * Evaluates whether a sound event needs capturing under the current toggle matrix.
+     * In radar-only mode ({@code !spatialWords && threatRadar}), non-threat sounds are rejected
+     * before definition inference, stack walking, or mailbox queueing.
+     */
+    public static boolean shouldCaptureSound(CaptionSettings activeSettings, String soundId) {
+        return SoundEventPolicy.shouldCaptureSound(activeSettings, soundId);
+    }
 
     record Request(SoundEngine engine, SoundDefinition definition, SoundSource category,
                            double x, double y, double z, boolean localPlayerShot) {}
@@ -65,12 +76,14 @@ public final class ClientSoundCapture {
         // Off-thread requests have no trustworthy world token; conservatively skip them in P1.
         if (!minecraft.isSameThread() || minecraft.level == null) return;
         synchronizeWorld(minecraft);
-        if (minecraft.isPaused() || !OnomixelConfig.ENABLED.get()) return;
-        if (!OnomixelConfig.spatialWords() && !OnomixelConfig.THREAT_RADAR.get()) return;
+        if (minecraft.isPaused()) return;
+        CaptionSettings activeSettings = OnomixelConfig.snapshot();
+        if (!activeSettings.enabled() || (!activeSettings.spatialWords() && !activeSettings.threatRadar())) return;
         SoundInstance sound = event.getSound();
         if (sound == null || sound.isRelative() || sound.getAttenuation() != SoundInstance.Attenuation.LINEAR
                 || sound.canStartSilent() || sound.getSource() == SoundSource.MUSIC) return;
         String soundId = sound.getIdentifier().toString();
+        if (!shouldCaptureSound(activeSettings, soundId)) return;
         SoundDefinition definition = SoundDefinitions.findOrInfer(soundId);
         if (definition == null || !Double.isFinite(sound.getX()) || !Double.isFinite(sound.getY()) || !Double.isFinite(sound.getZ())) return;
         if (definition.semantics() == SoundSemantics.STEP && minecraft.player != null) {
@@ -88,6 +101,7 @@ public final class ClientSoundCapture {
                 && SoundEventPolicy.isLocalPlayerShot(soundId, sound.getSource().name(), sound.getX(), sound.getY(), sound.getZ(),
                 minecraft.player.getX(), minecraft.player.getY(), minecraft.player.getZ()));
         // getVolume/getPitch are random samplers and may require unresolved data. Never call them here.
+        worldStateCleared = false;
         mailbox.request(sound, currentLevel, new Request(event.getEngine(), definition,
                 sound.getSource(), sound.getX(), sound.getY(), sound.getZ(), localPlayerShot), requestedAt);
         SoundSemantics sem = definition.semantics();
@@ -149,6 +163,7 @@ public final class ClientSoundCapture {
     private void onSourceStarted(SoundEvent.SoundSourceEvent event) {
         // Executed by SoundEngineExecutor: only inspect the local channel and immutable identity.
         String soundId = event.getSound().getIdentifier().toString();
+        if (!shouldCaptureSound(settings, soundId)) return;
         if (SoundDefinitions.contains(soundId)
                 && event.getChannel().playing()) {
             mailbox.confirm(event.getSound(), System.nanoTime());
@@ -169,6 +184,11 @@ public final class ClientSoundCapture {
                 delayedEmissions.removeIf(pending -> !pending.definition().semantics().allowed(next.mode()));
                 throttle.clear();
             }
+            if (!next.spatialWords() && settings.spatialWords()) {
+                subtitles.retainRadarThreatsOnly();
+                delayedEmissions.removeIf(pending -> ThreatRegistry.evaluate(pending.definition().soundId())
+                        == ThreatRegistry.ThreatLevel.NONE);
+            }
             settings = next;
             // Legacy extension getters stay current; the runtime path uses the immutable snapshot directly.
             CaptionVisuals.setActiveStyle(settings.style());
@@ -185,7 +205,10 @@ public final class ClientSoundCapture {
         lastActiveNanos = now;
         boolean active = settings.enabled() && (settings.spatialWords() || settings.threatRadar());
         if (currentLevel == null || !active) {
-            lifecycle.resetAllWorldState();
+            if (!worldStateCleared) {
+                lifecycle.resetAllWorldState();
+                worldStateCleared = true;
+            }
             return now;
         }
         if (minecraft.isPaused()) {
@@ -197,7 +220,9 @@ public final class ClientSoundCapture {
 
         // Acoustic Speed-of-Sound: deliver pending physically delayed atmospheric events
         int newPlacements = delayedEmissions.deliver(now, 12, !settings.speedOfSound(),
-                pending -> pending.definition().semantics().allowed(settings.mode()), pending -> {
+                pending -> pending.definition().semantics().allowed(settings.mode())
+                        && shouldCaptureSound(settings, pending.definition().soundId()),
+                pending -> {
                     String customDeliverText = SoundCustomizationManager.resolveDisplayText(pending.definition().soundId(), now);
                     String deliverKey = customDeliverText != null ? customDeliverText : pending.definition().translationKey();
                     subtitles.addAt(pending.definition().soundId(), deliverKey,
@@ -216,6 +241,8 @@ public final class ClientSoundCapture {
                     || minecraft.options.getFinalSoundSourceVolume(request.category) <= 0) continue;
             SoundDefinition definition = request.definition;
             String soundId = definition.soundId();
+            if (!shouldCaptureSound(settings, soundId)) continue;
+            worldStateCleared = false;
             if (SoundEventPolicy.isRain(soundId)
                     && !currentLevel.isRainingAt(BlockPos.containing(minecraft.gameRenderer.mainCamera().position()))) continue;
             if (!throttle.admit(soundId, definition.semantics(), request.x, request.y, request.z, now, settings.mode())) continue;

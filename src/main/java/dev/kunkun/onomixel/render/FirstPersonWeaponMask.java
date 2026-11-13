@@ -216,16 +216,45 @@ public final class FirstPersonWeaponMask {
                 norm.maxX() * width, norm.maxY() * height);
     }
 
+    private static final int HAND_COUNT = HandSide.values().length;
+    private static final int STATE_COUNT = WeaponState.values().length;
+    private static final FirstPersonWeaponMask[] NDC_CACHE = buildCache(CoordinateSpace.NDC);
+    private static final FirstPersonWeaponMask[] NORMALIZED_SCREEN_CACHE = buildCache(CoordinateSpace.NORMALIZED_SCREEN);
+
+    private static FirstPersonWeaponMask[] buildCache(CoordinateSpace space) {
+        FirstPersonWeaponMask[] cache = new FirstPersonWeaponMask[2 * HAND_COUNT * STATE_COUNT];
+        for (int fp = 0; fp < 2; fp++) {
+            boolean isFirstPerson = fp == 1;
+            for (HandSide hand : HandSide.values()) {
+                for (WeaponState state : WeaponState.values()) {
+                    int idx = (fp * HAND_COUNT + hand.ordinal()) * STATE_COUNT + state.ordinal();
+                    if (space == CoordinateSpace.NDC) {
+                        cache[idx] = new FirstPersonWeaponMask(isFirstPerson, hand, state, CoordinateSpace.NDC,
+                                defaultNdcBounds(hand, state),
+                                DEFAULT_MAX_DISPLACEMENT_NDC, DEFAULT_BASE_DISPLACEMENT_NDC, DEFAULT_BUFFER_MARGIN_NDC);
+                    } else {
+                        cache[idx] = new FirstPersonWeaponMask(isFirstPerson, hand, state, CoordinateSpace.NORMALIZED_SCREEN,
+                                defaultNormalizedScreenBounds(hand, state),
+                                DEFAULT_MAX_DISPLACEMENT_NORM, DEFAULT_BASE_DISPLACEMENT_NORM, DEFAULT_BUFFER_MARGIN_NORM);
+                    }
+                }
+            }
+        }
+        return cache;
+    }
+
     public static FirstPersonWeaponMask createNdc(boolean isFirstPerson, HandSide handSide, WeaponState state) {
-        MaskBounds b = defaultNdcBounds(handSide, state);
-        return new FirstPersonWeaponMask(isFirstPerson, handSide, state, CoordinateSpace.NDC, b,
-                DEFAULT_MAX_DISPLACEMENT_NDC, DEFAULT_BASE_DISPLACEMENT_NDC, DEFAULT_BUFFER_MARGIN_NDC);
+        if (handSide == null) throw new IllegalArgumentException("handSide must not be null");
+        if (state == null) throw new IllegalArgumentException("weaponState must not be null");
+        int idx = ((isFirstPerson ? 1 : 0) * HAND_COUNT + handSide.ordinal()) * STATE_COUNT + state.ordinal();
+        return NDC_CACHE[idx];
     }
 
     public static FirstPersonWeaponMask createNormalizedScreen(boolean isFirstPerson, HandSide handSide, WeaponState state) {
-        MaskBounds b = defaultNormalizedScreenBounds(handSide, state);
-        return new FirstPersonWeaponMask(isFirstPerson, handSide, state, CoordinateSpace.NORMALIZED_SCREEN, b,
-                DEFAULT_MAX_DISPLACEMENT_NORM, DEFAULT_BASE_DISPLACEMENT_NORM, DEFAULT_BUFFER_MARGIN_NORM);
+        if (handSide == null) throw new IllegalArgumentException("handSide must not be null");
+        if (state == null) throw new IllegalArgumentException("weaponState must not be null");
+        int idx = ((isFirstPerson ? 1 : 0) * HAND_COUNT + handSide.ordinal()) * STATE_COUNT + state.ordinal();
+        return NORMALIZED_SCREEN_CACHE[idx];
     }
 
     public static FirstPersonWeaponMask createScreenPixels(int width, int height, boolean isFirstPerson,

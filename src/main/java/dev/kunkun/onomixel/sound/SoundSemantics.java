@@ -18,6 +18,13 @@ public enum SoundSemantics {
     AMBIENT(2),
     OTHER(3);
 
+    private static final BoundedLookupCache<String, SoundSemantics> CLASSIFICATION_CACHE =
+            new BoundedLookupCache<>(4096, 512);
+    private static final String[] INTERACTION_END_TOKENS = {
+            "click", "click_on", "click_off", "equip", "unequip", "eat", "drink", "burp",
+            "use", "block", "throw", "launch", "place", "insert", "eject", "interact"
+    };
+
     private final int importance;
 
     SoundSemantics(int importance) {
@@ -53,39 +60,46 @@ public enum SoundSemantics {
 
     public static SoundSemantics classify(String id) {
         if (id == null) return OTHER;
-        String path = path(id);
+        SoundSemantics cached = CLASSIFICATION_CACHE.get(id);
+        if (cached != null) return cached;
+        SoundSemantics result = computeClassify(id);
+        CLASSIFICATION_CACHE.putIfAbsent(id, result);
+        return result;
+    }
+
+    private static SoundSemantics computeClassify(String id) {
+        int pathStart = pathStart(id);
 
         // High-signal actions must take precedence over broad mob/voice patterns.
-        if (containsToken(path, "attack") || containsToken(path, "sonic_boom")
-                || containsToken(path, "sonic_charge") || containsToken(path, "explode")
-                || path.endsWith(".primed") || containsToken(path, "shoot")
-                || path.startsWith("entity.") && (endsToken(path, "hit") || path.contains(".hit_"))
-                || path.startsWith("entity.firework_rocket.") && path.contains(".blast")) return ATTACK;
-        if (endsToken(path, "hurt") || path.contains(".hurt_") || endsToken(path, "death")
-                || path.contains(".death_") || endsToken(path, "damage")) return DAMAGE;
-        if (path.endsWith(".trade") || path.endsWith(".open") || path.endsWith(".close")
-                || path.endsWith(".toggle") || path.endsWith(".activate") || path.endsWith(".deactivate")
-                || endsAny(path, "click", "click_on", "click_off", "equip", "unequip", "eat", "drink", "burp",
-                        "use", "block", "throw", "launch", "place", "insert", "eject", "interact")
-                || containsToken(path, "eat") || containsToken(path, "drink") || containsToken(path, "equip")
-                || containsToken(path, "unequip") || containsToken(path, "use")) {
+        if (containsToken(id, pathStart, "attack") || containsToken(id, pathStart, "sonic_boom")
+                || containsToken(id, pathStart, "sonic_charge") || containsToken(id, pathStart, "explode")
+                || pathEndsWith(id, pathStart, ".primed") || containsToken(id, pathStart, "shoot")
+                || pathStartsWith(id, pathStart, "entity.") && (endsToken(id, pathStart, "hit") || pathContains(id, pathStart, ".hit_"))
+                || pathStartsWith(id, pathStart, "entity.firework_rocket.") && pathContains(id, pathStart, ".blast")) return ATTACK;
+        if (endsToken(id, pathStart, "hurt") || pathContains(id, pathStart, ".hurt_") || endsToken(id, pathStart, "death")
+                || pathContains(id, pathStart, ".death_") || endsToken(id, pathStart, "damage")) return DAMAGE;
+        if (pathEndsWith(id, pathStart, ".trade") || pathEndsWith(id, pathStart, ".open") || pathEndsWith(id, pathStart, ".close")
+                || pathEndsWith(id, pathStart, ".toggle") || pathEndsWith(id, pathStart, ".activate") || pathEndsWith(id, pathStart, ".deactivate")
+                || endsAny(id, pathStart, INTERACTION_END_TOKENS)
+                || containsToken(id, pathStart, "eat") || containsToken(id, pathStart, "drink") || containsToken(id, pathStart, "equip")
+                || containsToken(id, pathStart, "unequip") || containsToken(id, pathStart, "use")) {
             return INTERACTION;
         }
-        if (path.endsWith(".break") || path.endsWith(".breaks") || path.contains(".break_")) return BREAK;
-        if (path.endsWith(".pickup") || path.endsWith(".collect")) return PICKUP;
+        if (pathEndsWith(id, pathStart, ".break") || pathEndsWith(id, pathStart, ".breaks") || pathContains(id, pathStart, ".break_")) return BREAK;
+        if (pathEndsWith(id, pathStart, ".pickup") || pathEndsWith(id, pathStart, ".collect")) return PICKUP;
         if (isHeavyThreatStep(id)) return HEAVY_STEP;
         if (matchesGallop(id)) return GALLOP;
         if (matchesStep(id)) return STEP;
-        if (matchesLanding(path)) return LANDING;
+        if (matchesLanding(id, pathStart)) return LANDING;
         if (isRainId(id)) return AMBIENT;
-        if (path.startsWith("block.") && path.contains(".ambient")) return AMBIENT;
-        if (path.startsWith("entity.") && (path.endsWith(".ambient") || path.contains(".ambient_"))) {
+        if (pathStartsWith(id, pathStart, "block.") && pathContains(id, pathStart, ".ambient")) return AMBIENT;
+        if (pathStartsWith(id, pathStart, "entity.") && (pathEndsWith(id, pathStart, ".ambient") || pathContains(id, pathStart, ".ambient_"))) {
             return IDLE_VOICE;
         }
         // The catalog's non-break block events are mechanical interactions by default.
-        if (path.startsWith("block.")) return INTERACTION;
-        if (path.startsWith("entity.") && SoundPlacement.isMob(id)) return VOICE;
-        if (path.contains(".ambient")) return AMBIENT;
+        if (pathStartsWith(id, pathStart, "block.")) return INTERACTION;
+        if (pathStartsWith(id, pathStart, "entity.") && SoundPlacement.isMob(id)) return VOICE;
+        if (pathContains(id, pathStart, ".ambient")) return AMBIENT;
         return OTHER;
     }
 
@@ -116,13 +130,19 @@ public enum SoundSemantics {
         return id.endsWith(".step") || id.contains(".step_") || id.contains(".step.");
     }
 
-    private static boolean matchesLanding(String path) {
-        return path.endsWith(".fall") || path.endsWith("_fall") || path.endsWith(".land")
-                || path.endsWith(".landing") || path.endsWith(".small_fall");
+    private static boolean matchesLanding(String id, int pathStart) {
+        return pathEndsWith(id, pathStart, ".fall") || pathEndsWith(id, pathStart, "_fall")
+                || pathEndsWith(id, pathStart, ".land") || pathEndsWith(id, pathStart, ".landing")
+                || pathEndsWith(id, pathStart, ".small_fall");
     }
 
     private static boolean isRainId(String id) {
         return "minecraft:weather.rain".equals(id) || "minecraft:weather.rain.above".equals(id);
+    }
+
+    private static int pathStart(String id) {
+        int separator = id.indexOf(':');
+        return separator < 0 ? 0 : separator + 1;
     }
 
     private static String path(String id) {
@@ -130,17 +150,50 @@ public enum SoundSemantics {
         return separator < 0 ? id : id.substring(separator + 1);
     }
 
-    private static boolean containsToken(String path, String token) {
-        return path.endsWith("." + token) || path.contains("." + token + ".")
-                || path.contains("." + token + "_") || path.contains("_" + token + "_");
+    private static boolean pathStartsWith(String id, int pathStart, String prefix) {
+        return id.regionMatches(pathStart, prefix, 0, prefix.length());
     }
 
-    private static boolean endsToken(String path, String token) {
-        return path.endsWith("." + token) || path.endsWith("_" + token);
+    private static boolean pathEndsWith(String id, int pathStart, String suffix) {
+        return id.length() - pathStart >= suffix.length() && id.endsWith(suffix);
     }
 
-    private static boolean endsAny(String path, String... tokens) {
-        for (String token : tokens) if (endsToken(path, token)) return true;
+    private static boolean pathContains(String id, int pathStart, String sub) {
+        return id.indexOf(sub, pathStart) >= 0;
+    }
+
+    private static boolean containsToken(String id, int pathStart, String token) {
+        int tokenLen = token.length();
+        int len = id.length();
+        int idx = id.indexOf(token, pathStart);
+        while (idx >= 0) {
+            if (idx > pathStart) {
+                char prev = id.charAt(idx - 1);
+                int end = idx + tokenLen;
+                if (prev == '.' && (end == len || id.charAt(end) == '.' || id.charAt(end) == '_')) {
+                    return true;
+                }
+                if (prev == '_' && end < len && id.charAt(end) == '_') {
+                    return true;
+                }
+            }
+            idx = id.indexOf(token, idx + 1);
+        }
+        return false;
+    }
+
+    private static boolean endsToken(String id, int pathStart, String token) {
+        int tokenLen = token.length();
+        int sepIdx = id.length() - tokenLen - 1;
+        if (sepIdx < pathStart) return false;
+        char sep = id.charAt(sepIdx);
+        return (sep == '.' || sep == '_') && id.regionMatches(sepIdx + 1, token, 0, tokenLen);
+    }
+
+    private static boolean endsAny(String id, int pathStart, String[] tokens) {
+        for (String token : tokens) {
+            if (endsToken(id, pathStart, token)) return true;
+        }
         return false;
     }
 

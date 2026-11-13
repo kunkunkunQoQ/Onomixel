@@ -1,10 +1,25 @@
 package dev.kunkun.onomixel.sound;
 
+import dev.kunkun.onomixel.subtitle.CaptionSettings;
+import dev.kunkun.onomixel.subtitle.ThreatRegistry;
+
 import java.util.function.BooleanSupplier;
 
-/** Explicit special cases for attributable movement sounds and real rain surfaces. */
+/** Explicit special cases for attributable movement sounds, capture gating, and real rain surfaces. */
 public final class SoundEventPolicy {
     private SoundEventPolicy() {}
+
+    /**
+     * Evaluates whether a sound event needs capturing under the current toggle matrix.
+     * In radar-only mode ({@code !spatialWords && threatRadar}), non-threat sounds are rejected
+     * before definition inference, stack walking, or mailbox queueing.
+     */
+    public static boolean shouldCaptureSound(CaptionSettings activeSettings, String soundId) {
+        if (activeSettings == null || !activeSettings.enabled()) return false;
+        if (activeSettings.spatialWords()) return true;
+        if (!activeSettings.threatRadar()) return false;
+        return ThreatRegistry.evaluate(soundId) != ThreatRegistry.ThreatLevel.NONE;
+    }
 
     public static boolean isStep(String id) {
         return SoundSemantics.isStep(id);

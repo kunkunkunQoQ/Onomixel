@@ -69,6 +69,8 @@ public final class ScreenRadarRenderer {
 
     // Reusable list to interface with ScreenRadarLayout without per-frame ArrayList allocations
     private final List<ScreenRadarLayout.InputCandidate> reusableLayoutInputs = new ArrayList<>(MAX_DISPLAYED);
+    private final Vector3f scratchLook = new Vector3f();
+    private final Vector3f scratchUp = new Vector3f();
 
     public ScreenRadarRenderer(ClientSoundCapture capture) {
         this.capture = capture;
@@ -118,8 +120,8 @@ public final class ScreenRadarRenderer {
         Vec3 camPos = camera.position();
         Quaternionf orientation = camera.rotation();
 
-        Vector3f look = new Vector3f(0, 0, -1).rotate(orientation);
-        Vector3f up = new Vector3f(0, 1, 0).rotate(orientation);
+        Vector3f look = scratchLook.set(0, 0, -1).rotate(orientation);
+        Vector3f up = scratchUp.set(0, 1, 0).rotate(orientation);
 
         GuiGraphicsExtractor extractor = event.getGuiGraphics();
         int screenWidth = extractor.guiWidth();

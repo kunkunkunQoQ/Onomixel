@@ -1,5 +1,6 @@
 package dev.kunkun.onomixel.sound;
 
+import dev.kunkun.onomixel.subtitle.VisualType;
 import dev.kunkun.onomixel.subtitle.VisualTypeRegistry;
 import java.util.Map;
 import java.util.Objects;
@@ -9,9 +10,12 @@ import java.util.concurrent.ConcurrentMap;
 /** Public addon registration. Unknown events stay excluded until given a complete definition. */
 public final class SoundDefinitions {
     private static final ConcurrentMap<String, SoundDefinition> ADDONS = new ConcurrentHashMap<>();
-    private static final ConcurrentMap<String, SoundDefinition> INFERRED = new ConcurrentHashMap<>();
+    private static final BoundedLookupCache<String, SoundDefinition> INFERRED =
+            new BoundedLookupCache<>(256, 4096, 512);
     private static final ConcurrentMap<String, SoundDefinition.Source> BUILTIN_SOURCES = new ConcurrentHashMap<>();
-    private static final Map<String, SoundDefinition> BUILTIN_CACHE = new ConcurrentHashMap<>(128);
+    private static final Map<String, SoundDefinition> BUILTIN_CACHE = new ConcurrentHashMap<>(256);
+    private static final BoundedLookupCache<String, Boolean> UNKNOWN_BUILTIN =
+            new BoundedLookupCache<>(128, 1024, 128);
 
     private SoundDefinitions() {}
 
@@ -19,6 +23,7 @@ public final class SoundDefinitions {
         Objects.requireNonNull(definition, "definition");
         INFERRED.remove(definition.soundId());
         BUILTIN_CACHE.remove(definition.soundId());
+        UNKNOWN_BUILTIN.remove(definition.soundId());
         SoundDefinition previous = ADDONS.putIfAbsent(definition.soundId(), definition);
         if (previous != null && !previous.equals(definition))
             throw new IllegalArgumentException("Duplicate sound definition: " + definition.soundId());
@@ -30,6 +35,7 @@ public final class SoundDefinitions {
         Objects.requireNonNull(definition, "definition");
         INFERRED.remove(definition.soundId());
         BUILTIN_CACHE.remove(definition.soundId());
+        UNKNOWN_BUILTIN.remove(definition.soundId());
         ADDONS.put(definition.soundId(), definition);
         VisualTypeRegistry.registerType(definition.visualType());
         VisualTypeRegistry.registerSound(definition.soundId(), definition.visualType());
@@ -37,21 +43,28 @@ public final class SoundDefinitions {
 
     public static boolean contains(String soundId) {
         return soundId != null && (ADDONS.containsKey(soundId)
+                || BUILTIN_CACHE.containsKey(soundId)
                 || BuiltinSoundMappings.translationKey(soundId) != null
                 || INFERRED.containsKey(soundId));
     }
 
     public static SoundSemantics semantics(String soundId) {
-        SoundDefinition addon = soundId == null ? null : ADDONS.get(soundId);
-        if (addon == null && soundId != null) addon = INFERRED.get(soundId);
-        return addon == null ? SoundSemantics.classify(soundId) : addon.semantics();
+        if (soundId == null) return SoundSemantics.OTHER;
+        SoundDefinition cached = ADDONS.get(soundId);
+        if (cached == null) cached = BUILTIN_CACHE.get(soundId);
+        if (cached == null) cached = INFERRED.get(soundId);
+        return cached == null ? SoundSemantics.classify(soundId) : cached.semantics();
     }
 
     public static SoundDefinition.Source source(String soundId) {
-        SoundDefinition definition = soundId == null ? null : ADDONS.get(soundId);
-        if (definition == null && soundId != null) definition = INFERRED.get(soundId);
+        if (soundId == null) return SoundDefinition.Source.DEFAULT;
+        SoundDefinition definition = ADDONS.get(soundId);
+        if (definition == null) definition = BUILTIN_CACHE.get(soundId);
+        if (definition == null) definition = INFERRED.get(soundId);
         if (definition != null) return definition.source();
-        if (soundId == null || BuiltinSoundMappings.translationKey(soundId) == null) return SoundDefinition.Source.DEFAULT;
+        SoundDefinition.Source cachedSource = BUILTIN_SOURCES.get(soundId);
+        if (cachedSource != null) return cachedSource;
+        if (BuiltinSoundMappings.translationKey(soundId) == null) return SoundDefinition.Source.DEFAULT;
         return BUILTIN_SOURCES.computeIfAbsent(soundId, SoundDefinitions::builtinSource);
     }
 
@@ -66,20 +79,34 @@ public final class SoundDefinitions {
                 : SoundDefinition.Source.DEFAULT;
     }
 
+    /** Returns an inferred VisualType only if already cached (avoids re-entrant find calls). */
+    public static VisualType inferredVisualType(String soundId) {
+        SoundDefinition inferred = INFERRED.get(soundId);
+        return inferred != null ? inferred.visualType() : null;
+    }
+
     public static SoundDefinition find(String soundId) {
         if (soundId == null) return null;
         SoundDefinition addon = ADDONS.get(soundId);
         if (addon != null) return addon;
         SoundDefinition cached = BUILTIN_CACHE.get(soundId);
         if (cached != null) return cached;
+        SoundDefinition inferred = INFERRED.get(soundId);
+        if (inferred != null) return inferred;
+        if (soundId.startsWith("minecraft:") && UNKNOWN_BUILTIN.get(soundId) != null) {
+            return null;
+        }
         String key = BuiltinSoundMappings.translationKey(soundId);
         if (key != null) {
             SoundDefinition def = new SoundDefinition(soundId, key, SoundSemantics.classify(soundId),
                     source(soundId), VisualTypeRegistry.resolve(soundId));
-            BUILTIN_CACHE.putIfAbsent(soundId, def);
-            return def;
+            SoundDefinition existing = BUILTIN_CACHE.putIfAbsent(soundId, def);
+            return existing != null ? existing : def;
         }
-        return INFERRED.get(soundId);
+        if (soundId.startsWith("minecraft:")) {
+            UNKNOWN_BUILTIN.put(soundId, Boolean.TRUE);
+        }
+        return null;
     }
 
     public static SoundDefinition findOrInfer(String soundId) {
@@ -89,16 +116,18 @@ public final class SoundDefinitions {
         SoundDefinition inferred = UniversalModdedInferenceEngine.inferDefinition(soundId);
         INFERRED.put(inferred.soundId(), inferred);
         VisualTypeRegistry.registerType(inferred.visualType());
-        VisualTypeRegistry.registerSound(inferred.soundId(), inferred.visualType());
+        VisualTypeRegistry.invalidateSound(inferred.soundId());
         return inferred;
     }
 
     public static void clearInferred() {
         INFERRED.clear();
+        VisualTypeRegistry.invalidateResolutionCaches();
     }
 
     public static void clearBuiltinCache() {
         BUILTIN_CACHE.clear();
+        UNKNOWN_BUILTIN.clear();
     }
 
     /** Resets dynamic addon registrations and caches for isolated unit testing. */
@@ -107,5 +136,6 @@ public final class SoundDefinitions {
         INFERRED.clear();
         BUILTIN_SOURCES.clear();
         BUILTIN_CACHE.clear();
+        UNKNOWN_BUILTIN.clear();
     }
 }

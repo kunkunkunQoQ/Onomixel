@@ -12,10 +12,13 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 
 /** Bounded shared metrics/text cache; language and resource reloads invalidate both together. */
 final class CaptionTextCache {
+    private static final int MAX_ENTRIES = 256;
+
     record GlyphDraw(FormattedCharSequence text, KineticTypography.AnimatedGlyph motion) {}
     record GlyphMetric(FormattedCharSequence text, KineticTypography.GlyphInput input) {}
     record Text(FormattedCharSequence text, float halfWidth, float halfHeight,
@@ -27,8 +30,65 @@ final class CaptionTextCache {
             glyphs = glyphs instanceof java.util.RandomAccess ? Collections.unmodifiableList(glyphs) : List.copyOf(glyphs);
         }
     }
-    private record Key(String translationKey, boolean bold, boolean italic) {}
-    private final Map<Key, Text> entries = new LinkedHashMap<>();
+
+    private static final class CacheKey {
+        private String translationKey;
+        private String prefix;
+        private String suffix;
+        private boolean bold;
+        private boolean italic;
+        private int hash;
+
+        CacheKey() {}
+
+        CacheKey(String translationKey, String prefix, String suffix, boolean bold, boolean italic, int hash) {
+            this.translationKey = translationKey;
+            this.prefix = prefix;
+            this.suffix = suffix;
+            this.bold = bold;
+            this.italic = italic;
+            this.hash = hash;
+        }
+
+        void set(String translationKey, String prefix, String suffix, boolean bold, boolean italic) {
+            this.translationKey = translationKey;
+            this.prefix = prefix;
+            this.suffix = suffix;
+            this.bold = bold;
+            this.italic = italic;
+            int h = Objects.hashCode(translationKey);
+            h = 31 * h + Objects.hashCode(prefix);
+            h = 31 * h + Objects.hashCode(suffix);
+            h = 31 * h + (bold ? 1231 : 1237);
+            h = 31 * h + (italic ? 1231 : 1237);
+            this.hash = h;
+        }
+
+        @Override
+        public int hashCode() {
+            return hash;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof CacheKey other)) return false;
+            return bold == other.bold
+                    && italic == other.italic
+                    && hash == other.hash
+                    && Objects.equals(translationKey, other.translationKey)
+                    && Objects.equals(prefix, other.prefix)
+                    && Objects.equals(suffix, other.suffix);
+        }
+    }
+
+    private final Map<CacheKey, Text> entries = new LinkedHashMap<>(MAX_ENTRIES, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<CacheKey, Text> eldest) {
+            return size() > MAX_ENTRIES;
+        }
+    };
+    private final CacheKey lookupProbe = new CacheKey();
     private final AtomicLong generation = new AtomicLong();
     private long cachedGeneration = -1;
     private Language language;
@@ -54,20 +114,19 @@ final class CaptionTextCache {
             language = Language.getInstance();
             cachedGeneration = currentGeneration;
         }
-        String cacheKeyStr = translationKey;
-        if (prefix != null) cacheKeyStr = prefix + cacheKeyStr;
-        if (suffix != null) cacheKeyStr = cacheKeyStr + suffix;
-        Key key = new Key(cacheKeyStr, bold, italic);
-        Text cached = entries.get(key);
+        String normPrefix = (prefix != null && !prefix.isEmpty()) ? prefix : null;
+        String normSuffix = (suffix != null && !suffix.isEmpty()) ? suffix : null;
+        lookupProbe.set(translationKey, normPrefix, normSuffix, bold, italic);
+        Text cached = entries.get(lookupProbe);
         if (cached != null) return cached;
         Component baseText = translationKey.startsWith("literal:")
                 ? Component.literal(translationKey.substring(8))
                 : Component.translatable(translationKey);
-        Component component = prefix != null
-                ? Component.literal(prefix).append(baseText)
+        Component component = normPrefix != null
+                ? Component.literal(normPrefix).append(baseText)
                 : baseText;
-        if (suffix != null && !suffix.isEmpty()) {
-            component = component.copy().append(suffix);
+        if (normSuffix != null) {
+            component = component.copy().append(normSuffix);
         }
         if (bold && italic) {
             component = component.copy().withStyle(ChatFormatting.BOLD, ChatFormatting.ITALIC);
@@ -95,8 +154,7 @@ final class CaptionTextCache {
         Text value = new Text(text, width / 2.0F, minecraft.font.lineHeight / 2.0F,
                 sourceGlyphs, kineticInputs, List.of(), codePoints.toString().hashCode(),
                 minecraft.font.lineHeight / 2.0F);
-        if (entries.size() == 256) entries.remove(entries.keySet().iterator().next());
-        entries.put(key, value);
+        entries.put(new CacheKey(translationKey, normPrefix, normSuffix, bold, italic, lookupProbe.hash), value);
         return value;
     }
 

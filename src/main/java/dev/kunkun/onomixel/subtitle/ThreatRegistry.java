@@ -1,5 +1,7 @@
 package dev.kunkun.onomixel.subtitle;
 
+import dev.kunkun.onomixel.sound.BoundedLookupCache;
+
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -28,6 +30,8 @@ public final class ThreatRegistry {
     }
 
     private static final Map<String, ThreatInfo> STATIC_INDEX;
+    private static final BoundedLookupCache<String, ThreatInfo> FALLBACK_CACHE =
+            new BoundedLookupCache<>(256, 4096, 512);
 
     static {
         Map<String, ThreatInfo> map = new HashMap<>(128);
@@ -114,14 +118,33 @@ public final class ThreatRegistry {
     }
 
     public static ThreatLevel evaluate(String soundId) {
-        if (soundId == null || soundId.isEmpty()) return ThreatLevel.NONE;
-        ThreatInfo info = STATIC_INDEX.get(soundId);
-        if (info != null) return info.level();
-        return fallbackEvaluate(soundId);
+        return resolveThreatInfo(soundId).level();
     }
 
-    private static ThreatLevel fallbackEvaluate(String soundId) {
+    private static ThreatInfo resolveThreatInfo(String soundId) {
+        if (soundId == null || soundId.isEmpty()) return ThreatInfo.NONE;
+        ThreatInfo info = STATIC_INDEX.get(soundId);
+        if (info != null) return info;
+        ThreatInfo cached = FALLBACK_CACHE.get(soundId);
+        if (cached != null) return cached;
+        ThreatInfo computed = computeFallbackInfo(soundId);
+        return FALLBACK_CACHE.putIfAbsent(soundId, computed);
+    }
+
+    private static ThreatInfo computeFallbackInfo(String soundId) {
         String id = soundId.toLowerCase(Locale.ROOT);
+        ThreatLevel level = fallbackEvaluateLower(id);
+        long explicitDur = fallbackExplicitDurationLower(id);
+        if (level == ThreatLevel.NONE && explicitDur <= 0L) {
+            return ThreatInfo.NONE;
+        }
+        String key = level == ThreatLevel.NONE
+                ? ThreatInfo.NONE.threatNameKey()
+                : fallbackNameKeyLower(id, level);
+        return new ThreatInfo(level, explicitDur, key);
+    }
+
+    private static ThreatLevel fallbackEvaluateLower(String id) {
 
         // P0 Critical Threats: Instant-Kill, Explosions, Boss Attacks, Lightning
         if (id.contains("creeper.primed")
@@ -191,14 +214,10 @@ public final class ThreatRegistry {
     }
 
     public static long radarDurationNanos(String soundId, long fallbackNanos) {
-        if (soundId == null || soundId.isEmpty()) return 0L;
-        ThreatInfo info = STATIC_INDEX.get(soundId);
-        if (info != null) return info.resolveDuration(fallbackNanos);
-        return fallbackDuration(soundId, fallbackNanos);
+        return resolveThreatInfo(soundId).resolveDuration(fallbackNanos);
     }
 
-    private static long fallbackDuration(String soundId, long fallbackNanos) {
-        String id = soundId.toLowerCase(Locale.ROOT);
+    private static long fallbackExplicitDurationLower(String id) {
 
         // Cat 3: 持续引信/倒计时
         if (id.contains("tnt.primed")) return 3_000_000_000L; // 3000ms
@@ -249,11 +268,6 @@ public final class ThreatRegistry {
                 || id.contains("lightning_bolt.impact")
                 || id.contains("evoker_fangs.attack")) return 450_000_000L; // 450ms
 
-        ThreatLevel level = fallbackEvaluate(soundId);
-        if (level == ThreatLevel.CRITICAL || level == ThreatLevel.ELEVATED) {
-            return fallbackNanos > 0 ? fallbackNanos : 800_000_000L;
-        }
-
         return 0L;
     }
 
@@ -276,13 +290,10 @@ public final class ThreatRegistry {
      */
     public static String resolveThreatNameKey(String soundId) {
         if (soundId == null || soundId.isEmpty()) return "onomixel.threat.generic_critical";
-        ThreatInfo info = STATIC_INDEX.get(soundId);
-        if (info != null) return info.threatNameKey();
-        return fallbackNameKey(soundId);
+        return resolveThreatInfo(soundId).threatNameKey();
     }
 
-    private static String fallbackNameKey(String soundId) {
-        String id = soundId.toLowerCase(Locale.ROOT);
+    private static String fallbackNameKeyLower(String id, ThreatLevel level) {
 
         // Explosives
         if (id.contains("creeper.primed")) return "onomixel.threat.creeper_primed";
@@ -330,7 +341,7 @@ public final class ThreatRegistry {
         // Lightning
         if (id.contains("lightning_bolt.thunder") || id.contains("lightning_bolt.impact")) return "onomixel.threat.lightning";
 
-        return fallbackEvaluate(soundId) == ThreatLevel.CRITICAL
+        return level == ThreatLevel.CRITICAL
                 ? "onomixel.threat.generic_critical"
                 : "onomixel.threat.generic_elevated";
     }

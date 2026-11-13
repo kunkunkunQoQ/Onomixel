@@ -83,6 +83,11 @@ public final class CaptionVisuals {
         return VisualTypeRegistry.resolve(soundId);
     }
 
+    /** Resolves the extensible {@link VisualType} using a pre-resolved custom rule. */
+    public static VisualType type(String soundId, CustomWordRule customRule) {
+        return VisualTypeRegistry.resolve(soundId, customRule);
+    }
+
     /** Gets the currently active color style palette. */
     public static ColorStyle activeStyle() {
         return activeStyle;
@@ -212,7 +217,18 @@ public final class CaptionVisuals {
                                 long seed, ColorStyle style, AestheticStyle aestheticStyle,
                                 ColorblindMode colorblindMode) {
         if (type == null) type = VisualTypes.IMPACT;
-        return sampleWithStyles(type, soundId, ageSeconds, sinceTriggerSeconds, seed,
+        return sampleWithStyles(type, soundId, null, false, ageSeconds, sinceTriggerSeconds, seed,
+                style != null ? style : ColorStyle.VIBRANT,
+                aestheticStyle != null ? aestheticStyle : AestheticStyle.SHONEN,
+                colorblindMode != null ? colorblindMode : ColorblindMode.OFF);
+    }
+
+    /** Samples an effect using a pre-resolved custom rule to avoid duplicate override-index lookups. */
+    public static Effect sample(VisualType type, String soundId, CustomWordRule customRule,
+                                double ageSeconds, double sinceTriggerSeconds, long seed, ColorStyle style,
+                                AestheticStyle aestheticStyle, ColorblindMode colorblindMode) {
+        if (type == null) type = VisualTypes.IMPACT;
+        return sampleWithStyles(type, soundId, customRule, true, ageSeconds, sinceTriggerSeconds, seed,
                 style != null ? style : ColorStyle.VIBRANT,
                 aestheticStyle != null ? aestheticStyle : AestheticStyle.SHONEN,
                 colorblindMode != null ? colorblindMode : ColorblindMode.OFF);
@@ -220,11 +236,12 @@ public final class CaptionVisuals {
 
     private static Effect safeSample(VisualType type, String soundId, double ageSeconds,
                                     double sinceTriggerSeconds, long seed, ColorStyle style) {
-        return sampleWithStyles(type, soundId, ageSeconds, sinceTriggerSeconds, seed,
+        return sampleWithStyles(type, soundId, null, false, ageSeconds, sinceTriggerSeconds, seed,
                 style, activeAestheticStyle, activeColorblindMode);
     }
 
-    private static Effect sampleWithStyles(VisualType type, String soundId, double ageSeconds,
+    private static Effect sampleWithStyles(VisualType type, String soundId, CustomWordRule preResolvedRule,
+                                           boolean hasPreResolvedRule, double ageSeconds,
                                            double sinceTriggerSeconds, long seed, ColorStyle style,
                                            AestheticStyle aestheticStyle, ColorblindMode colorblindMode) {
         Effect effect = null;
@@ -237,7 +254,9 @@ public final class CaptionVisuals {
         }
         Effect bounded = type.bound(effect);
         if (soundId != null) {
-            CustomWordRule customRule = SoundCustomizationManager.resolve(soundId);
+            CustomWordRule customRule = hasPreResolvedRule
+                    ? preResolvedRule
+                    : SoundCustomizationManager.resolve(soundId);
             if (customRule != null) {
                 bounded = applyCustomRuleEffect(bounded, customRule, ageSeconds, style);
             }

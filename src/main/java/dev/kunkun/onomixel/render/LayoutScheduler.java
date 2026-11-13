@@ -26,17 +26,21 @@ public final class LayoutScheduler {
     public static Set<Long> select(List<Work> work, int displayLimit, long now) {
         if (work == null || work.isEmpty()) return Set.of();
         int visibleCount = 0;
-        List<Work> due = new ArrayList<>(work.size());
-        for (int i = 0; i < work.size(); i++) {
+        List<Work> due = null;
+        int workSize = work.size();
+        for (int i = 0; i < workSize; i++) {
             Work w = work.get(i);
             if (w != null && w.visible) {
                 visibleCount++;
                 if (now - w.lastSolveNanos >= INTERVAL_NANOS) {
+                    if (due == null) {
+                        due = new ArrayList<>(workSize - i);
+                    }
                     due.add(w);
                 }
             }
         }
-        if (due.isEmpty()) return Set.of();
+        if (due == null) return Set.of();
 
         int budget = budget(visibleCount, displayLimit);
         due.sort(OLDEST_COMPARATOR);

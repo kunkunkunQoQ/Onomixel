@@ -1,6 +1,5 @@
 package dev.kunkun.onomixel.render;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -18,49 +17,75 @@ public final class CaptionRoute {
                                int targetSlot,
                                List<BillboardProjection.Bounds> obstacles) {
         if (slots == null || slots.isEmpty()) return -1;
-        int fallback = Math.max(0, Math.min(targetSlot, slots.size() - 1));
-        if (current == null || targetSlot < 0 || targetSlot >= slots.size() || slots.get(targetSlot) == null) {
+        int slotListSize = slots.size();
+        int fallback = Math.max(0, Math.min(targetSlot, slotListSize - 1));
+        if (current == null || targetSlot < 0 || targetSlot >= slotListSize || slots.get(targetSlot) == null) {
             return fallback;
         }
-        BillboardProjection.Bounds target = slots.get(targetSlot);
-        List<BillboardProjection.Bounds> validSlots = new ArrayList<>();
-        List<Integer> originalIndices = new ArrayList<>();
-        for (int i = 0; i < slots.size(); i++) {
-            if (slots.get(i) != null) {
-                validSlots.add(slots.get(i));
-                originalIndices.add(i);
+        int obsCount = 0;
+        if (obstacles != null) {
+            for (int i = 0, n = obstacles.size(); i < n; i++) {
+                BillboardProjection.Bounds obstacle = obstacles.get(i);
+                if (obstacle != null && finite(obstacle)) {
+                    obsCount++;
+                }
             }
         }
-        int goal = originalIndices.indexOf(targetSlot) + 1;
-        int nodeCount = validSlots.size() + 1;
+        if (obsCount == 0) {
+            return targetSlot;
+        }
+
+        int validCount = 0;
+        for (int i = 0; i < slotListSize; i++) {
+            if (slots.get(i) != null) {
+                validCount++;
+            }
+        }
+        int nodeCount = validCount + 1;
         double[] xs = new double[nodeCount];
         double[] ys = new double[nodeCount];
+        int[] originalIndices = new int[validCount];
         xs[0] = centerX(current);
         ys[0] = centerY(current);
         double halfWidth = width(current) / 2;
         double halfHeight = height(current) / 2;
-        for (int i = 0; i < validSlots.size(); i++) {
-            BillboardProjection.Bounds slot = validSlots.get(i);
-            xs[i + 1] = centerX(slot);
-            ys[i + 1] = centerY(slot);
-            halfWidth = Math.max(halfWidth, width(slot) / 2);
-            halfHeight = Math.max(halfHeight, height(slot) / 2);
-        }
-
-        List<BillboardProjection.Bounds> expanded = new ArrayList<>();
-        if (obstacles != null) {
-            for (BillboardProjection.Bounds obstacle : obstacles) {
-                if (obstacle != null && finite(obstacle)) {
-                    expanded.add(new BillboardProjection.Bounds(
-                            (float) (obstacle.minX() - halfWidth), (float) (obstacle.minY() - halfHeight),
-                            (float) (obstacle.maxX() + halfWidth), (float) (obstacle.maxY() + halfHeight)));
+        int goal = -1;
+        int writeIdx = 0;
+        for (int i = 0; i < slotListSize; i++) {
+            BillboardProjection.Bounds slot = slots.get(i);
+            if (slot != null) {
+                int node = writeIdx + 1;
+                xs[node] = centerX(slot);
+                ys[node] = centerY(slot);
+                originalIndices[writeIdx] = i;
+                if (i == targetSlot) {
+                    goal = node;
                 }
+                halfWidth = Math.max(halfWidth, width(slot) / 2);
+                halfHeight = Math.max(halfHeight, height(slot) / 2);
+                writeIdx++;
             }
         }
+
+        float[] expanded = new float[obsCount * 4];
+        int expIdx = 0;
+        for (int i = 0, n = obstacles.size(); i < n; i++) {
+            BillboardProjection.Bounds obstacle = obstacles.get(i);
+            if (obstacle != null && finite(obstacle)) {
+                expanded[expIdx] = (float) (obstacle.minX() - halfWidth);
+                expanded[expIdx + 1] = (float) (obstacle.minY() - halfHeight);
+                expanded[expIdx + 2] = (float) (obstacle.maxX() + halfWidth);
+                expanded[expIdx + 3] = (float) (obstacle.maxY() + halfHeight);
+                expIdx += 4;
+            }
+        }
+
         boolean[] insideObstacle = new boolean[nodeCount];
         for (int node = 0; node < nodeCount; node++) {
-            for (BillboardProjection.Bounds obstacle : expanded) {
-                if (obstacle.contains((float) xs[node], (float) ys[node])) {
+            float px = (float) xs[node];
+            float py = (float) ys[node];
+            for (int base = 0; base < expanded.length; base += 4) {
+                if (containsBox(expanded, base, px, py)) {
                     insideObstacle[node] = true;
                     break;
                 }
@@ -104,47 +129,77 @@ public final class CaptionRoute {
             }
         }
         int hop = firstHop[goal];
-        return hop > 0 ? originalIndices.get(hop - 1) : fallback;
+        return hop > 0 ? originalIndices[hop - 1] : fallback;
+    }
+
+    private static boolean containsBox(float[] boxes, int base, float x, float y) {
+        return x >= boxes[base] && x <= boxes[base + 2] && y >= boxes[base + 1] && y <= boxes[base + 3];
     }
 
     private static boolean clear(double x0, double y0, double x1, double y1,
-                                 List<BillboardProjection.Bounds> obstacles) {
-        return clear(x0, y0, x1, y1, obstacles, false, false);
-    }
-
-    private static boolean clear(double x0, double y0, double x1, double y1,
-                                 List<BillboardProjection.Bounds> obstacles,
+                                 float[] expandedObstacles,
                                  boolean allowStartInside, boolean allowEndInside) {
-        for (BillboardProjection.Bounds obstacle : obstacles) {
-            boolean startsInside = obstacle.contains((float) x0, (float) y0);
-            boolean endsInside = obstacle.contains((float) x1, (float) y1);
-            if (segmentIntersects(x0, y0, x1, y1, obstacle)
+        float fx0 = (float) x0;
+        float fy0 = (float) y0;
+        float fx1 = (float) x1;
+        float fy1 = (float) y1;
+        for (int base = 0; base < expandedObstacles.length; base += 4) {
+            boolean startsInside = containsBox(expandedObstacles, base, fx0, fy0);
+            boolean endsInside = containsBox(expandedObstacles, base, fx1, fy1);
+            if (segmentIntersects(x0, y0, x1, y1,
+                    expandedObstacles[base], expandedObstacles[base + 1],
+                    expandedObstacles[base + 2], expandedObstacles[base + 3])
                     && !(startsInside && allowStartInside) && !(endsInside && allowEndInside)) return false;
         }
         return true;
     }
 
     private static boolean segmentIntersects(double x0, double y0, double x1, double y1,
-                                             BillboardProjection.Bounds box) {
-        double[] interval = {0, 1};
-        return clip(- (x1 - x0), x0 - box.minX(), interval)
-                && clip(x1 - x0, box.maxX() - x0, interval)
-                && clip(- (y1 - y0), y0 - box.minY(), interval)
-                && clip(y1 - y0, box.maxY() - y0, interval)
-                && interval[0] <= interval[1];
-    }
+                                             float minX, float minY, float maxX, float maxY) {
+        double dx = x1 - x0;
+        double dy = y1 - y0;
+        double t0 = 0.0;
+        double t1 = 1.0;
 
-    private static boolean clip(double p, double q, double[] interval) {
-        if (Math.abs(p) < 1.0e-12) return q >= 0;
-        double t = q / p;
-        if (p < 0) {
-            if (t > interval[1]) return false;
-            interval[0] = Math.max(interval[0], t);
+        // Clip against X bounds (-dx, x0 - minX) and (dx, maxX - x0)
+        if (Math.abs(dx) < 1.0e-12) {
+            if (x0 - minX < 0 || maxX - x0 < 0) return false;
         } else {
-            if (t < interval[0]) return false;
-            interval[1] = Math.min(interval[1], t);
+            double tLeft = (x0 - minX) / (-dx);
+            double tRight = (maxX - x0) / dx;
+            if (-dx < 0) {
+                if (tLeft > t1) return false;
+                t0 = Math.max(t0, tLeft);
+                if (tRight < t0) return false;
+                t1 = Math.min(t1, tRight);
+            } else {
+                if (tLeft < t0) return false;
+                t1 = Math.min(t1, tLeft);
+                if (tRight > t1) return false;
+                t0 = Math.max(t0, tRight);
+            }
         }
-        return true;
+
+        // Clip against Y bounds (-dy, y0 - minY) and (dy, maxY - y0)
+        if (Math.abs(dy) < 1.0e-12) {
+            if (y0 - minY < 0 || maxY - y0 < 0) return false;
+        } else {
+            double tBottom = (y0 - minY) / (-dy);
+            double tTop = (maxY - y0) / dy;
+            if (-dy < 0) {
+                if (tBottom > t1) return false;
+                t0 = Math.max(t0, tBottom);
+                if (tTop < t0) return false;
+                t1 = Math.min(t1, tTop);
+            } else {
+                if (tBottom < t0) return false;
+                t1 = Math.min(t1, tBottom);
+                if (tTop > t1) return false;
+                t0 = Math.max(t0, tTop);
+            }
+        }
+
+        return t0 <= t1;
     }
 
     private static boolean finite(BillboardProjection.Bounds box) {

@@ -46,20 +46,24 @@ public final class KineticTypography {
     }
 
     public static Mode resolveMode(String visualTypeId, String soundId) {
+        CustomWordRule custom = (soundId != null && !soundId.isEmpty())
+                ? SoundCustomizationManager.resolve(soundId)
+                : null;
+        return resolveMode(visualTypeId, soundId, custom);
+    }
+
+    public static Mode resolveMode(String visualTypeId, String soundId, CustomWordRule custom) {
         if (visualTypeId == null) visualTypeId = "";
         if (soundId == null) soundId = "";
 
-        if (!soundId.isEmpty()) {
-            CustomWordRule custom = SoundCustomizationManager.resolve(soundId);
-            if (custom != null && custom.kineticMotion() != null) {
-                String km = custom.kineticMotion();
-                if ("NONE".equalsIgnoreCase(km) || "STATIC".equalsIgnoreCase(km)) return Mode.NONE;
-                if ("WAVE".equalsIgnoreCase(km) || "FLOAT".equalsIgnoreCase(km)) return Mode.WAVE;
-                if ("JITTER".equalsIgnoreCase(km) || "SHAKE".equalsIgnoreCase(km)) return Mode.JITTER;
-                if ("EXPLOSIVE_TAPER".equalsIgnoreCase(km) || "HITSTOP".equalsIgnoreCase(km)
-                        || "POP".equalsIgnoreCase(km) || "STARBURST".equalsIgnoreCase(km)
-                        || "PIERCE".equalsIgnoreCase(km)) return Mode.EXPLOSIVE_TAPER;
-            }
+        if (custom != null && custom.kineticMotion() != null) {
+            String km = custom.kineticMotion();
+            if ("NONE".equalsIgnoreCase(km) || "STATIC".equalsIgnoreCase(km)) return Mode.NONE;
+            if ("WAVE".equalsIgnoreCase(km) || "FLOAT".equalsIgnoreCase(km)) return Mode.WAVE;
+            if ("JITTER".equalsIgnoreCase(km) || "SHAKE".equalsIgnoreCase(km)) return Mode.JITTER;
+            if ("EXPLOSIVE_TAPER".equalsIgnoreCase(km) || "HITSTOP".equalsIgnoreCase(km)
+                    || "POP".equalsIgnoreCase(km) || "STARBURST".equalsIgnoreCase(km)
+                    || "PIERCE".equalsIgnoreCase(km)) return Mode.EXPLOSIVE_TAPER;
         }
 
         if (visualTypeId.equals("onomixel:crit")

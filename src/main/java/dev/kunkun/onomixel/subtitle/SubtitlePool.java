@@ -282,6 +282,11 @@ public final class SubtitlePool {
         active.removeIf(subtitle -> !subtitle.semantics.allowed(mode));
     }
 
+    /** Retains only sounds classified as radar threats when transitioning into radar-only mode. */
+    public void retainRadarThreatsOnly() {
+        active.removeIf(subtitle -> ThreatRegistry.evaluate(subtitle.soundId()) == ThreatRegistry.ThreatLevel.NONE);
+    }
+
     private int weakestIndex() {
         int weakest = 0;
         for (int i = 1; i < active.size(); i++) {

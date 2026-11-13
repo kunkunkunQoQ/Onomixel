@@ -25,6 +25,7 @@ public final class WorldSubtitleRenderer {
     private final ClientSoundCapture capture;
     private final CaptionTextCache texts = new CaptionTextCache();
     private final DynamicSubtitleLayout dynamicLayout = new DynamicSubtitleLayout(texts);
+    private boolean layoutCleared = true;
 
     private record Text(double x, double y, double z, float scaleX, float scaleY, float tilt,
                         CaptionTextCache.Text layout, int color, int outline, float starburstAlpha) {}
@@ -42,10 +43,14 @@ public final class WorldSubtitleRenderer {
         long now = capture.pump(minecraft);
         var settings = capture.settings();
         if (!settings.enabled() || !settings.spatialWords() || minecraft.level != event.getLevel()) {
-            dynamicLayout.clear();
+            if (!layoutCleared) {
+                dynamicLayout.clear();
+                layoutCleared = true;
+            }
             event.getRenderState().setRenderData(FRAME, List.of());
             return;
         }
+        layoutCleared = false;
         CameraRenderState camera = event.getRenderState().cameraRenderState;
         List<Text> frame = new ArrayList<>();
         for (var placed : dynamicLayout.layout(minecraft, capture.subtitles(), camera, now, settings)) {

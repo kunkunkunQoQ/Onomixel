@@ -10,7 +10,7 @@ public final class OnomixelConfig {
     private static final ModConfigSpec.Builder BUILDER = new ModConfigSpec.Builder();
 
     public static final ModConfigSpec.BooleanValue ENABLED = BUILDER
-            .translation("onomixel.config.enabled").define("enabled", true);
+            .translation("onomixel.config.enabled").define("enabled", CaptionSettings.defaults().enabled());
     public static final ModConfigSpec.EnumValue<DisplayMode> DISPLAY_MODE = BUILDER
             .translation("onomixel.config.displayMode").defineEnum("displayMode", DisplayMode.LIGHTWEIGHT);
     public static final ModConfigSpec.EnumValue<ColorStyle> COLOR_STYLE = BUILDER
@@ -32,9 +32,9 @@ public final class OnomixelConfig {
 
     // Advanced Tactical, Manga Dynamics, and Universal Immersion
     public static final ModConfigSpec.BooleanValue SPATIAL_WORDS = BUILDER
-            .translation("onomixel.config.spatialWords").define("spatialWords", true);
+            .translation("onomixel.config.spatialWords").define("spatialWords", CaptionSettings.defaults().spatialWords());
     public static final ModConfigSpec.BooleanValue THREAT_RADAR = BUILDER
-            .translation("onomixel.config.threatRadar").define("threatRadar", true);
+            .translation("onomixel.config.threatRadar").define("threatRadar", CaptionSettings.defaults().threatRadar());
     /**
      * @deprecated Per DEC-07, prefix altitude badges have been superseded by 3D world projection
      *             and 2D radar altitude arrows. Preserved solely for backward compatibility.
@@ -140,14 +140,14 @@ public final class OnomixelConfig {
         if (SPEC != null && SPEC.isLoaded()) {
             return SPATIAL_WORDS.get();
         }
-        return true;
+        return CaptionSettings.defaults().spatialWords();
     }
 
     public static boolean threatRadar() {
         if (SPEC != null && SPEC.isLoaded()) {
             return THREAT_RADAR.get();
         }
-        return true;
+        return CaptionSettings.defaults().threatRadar();
     }
 
     public static ColorStyle colorStyle() {

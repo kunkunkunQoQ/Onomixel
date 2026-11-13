@@ -9,15 +9,23 @@ import java.util.Set;
 public final class LayoutBudget {
     public record Candidate(long id, boolean previouslyDrawn) {}
     public record Counts(int preparations, int sourceRays, int searchRays, int finalRays) {}
-    private final int preparationLimit;
-    private final int searchLimit;
-    private final int finalLimit;
+    private int preparationLimit;
+    private int searchLimit;
+    private int finalLimit;
     private int preparations, sourceRays, searchRays, finalRays;
 
     public LayoutBudget(int displayLimit) {
+        reset(displayLimit);
+    }
+
+    public void reset(int displayLimit) {
         preparationLimit = Math.clamp(displayLimit * 2, 16, 64);
         searchLimit = LayoutScheduler.budget(preparationLimit, displayLimit) * 9 * 6;
         finalLimit = preparationLimit * 7;
+        preparations = 0;
+        sourceRays = 0;
+        searchRays = 0;
+        finalRays = 0;
     }
 
     public int preparationLimit() { return preparationLimit; }
@@ -28,26 +36,41 @@ public final class LayoutBudget {
     public Set<Long> shortlist(List<Candidate> candidates, int displayLimit, long frame) {
         int cap = Math.min(candidates.size(), preparationLimit);
         Set<Long> selected = LinkedHashSet.newLinkedHashSet(cap);
+        return shortlistInto(candidates, displayLimit, frame, selected, null);
+    }
+
+    public Set<Long> shortlistInto(List<Candidate> candidates, int displayLimit, long frame,
+                                   Set<Long> selected, List<Candidate> restScratch) {
+        selected.clear();
         if (candidates.size() <= preparationLimit) {
-            for (Candidate candidate : candidates) selected.add(candidate.id());
+            for (int i = 0, size = candidates.size(); i < size; i++) {
+                selected.add(candidates.get(i).id());
+            }
             return selected;
         }
         int preferred = Math.min(displayLimit, preparationLimit - 2);
-        for (Candidate candidate : candidates) {
+        for (int i = 0, size = candidates.size(); i < size; i++) {
             if (selected.size() >= preferred) break;
-            selected.add(candidate.id());
+            selected.add(candidates.get(i).id());
         }
-        for (Candidate candidate : candidates) {
+        for (int i = 0, size = candidates.size(); i < size; i++) {
             if (selected.size() >= preparationLimit - 1) break;
+            Candidate candidate = candidates.get(i);
             if (candidate.previouslyDrawn()) selected.add(candidate.id());
         }
-        List<Candidate> rest = new ArrayList<>(candidates.size() - selected.size());
-        for (Candidate candidate : candidates) if (!selected.contains(candidate.id())) rest.add(candidate);
+        List<Candidate> rest = restScratch != null ? restScratch : new ArrayList<>(candidates.size() - selected.size());
+        rest.clear();
+        for (int i = 0, size = candidates.size(); i < size; i++) {
+            Candidate candidate = candidates.get(i);
+            if (!selected.contains(candidate.id())) rest.add(candidate);
+        }
         if (!rest.isEmpty()) {
             int start = (int) Math.floorMod(frame, (long) rest.size());
-            for (int i = 0; i < rest.size() && selected.size() < preparationLimit; i++)
+            for (int i = 0; i < rest.size() && selected.size() < preparationLimit; i++) {
                 selected.add(rest.get((start + i) % rest.size()).id());
+            }
         }
+        rest.clear();
         return selected;
     }
 

@@ -245,9 +245,18 @@ public final class BattlefieldClusterLOD {
                 float alpha
         ) {
             this(category, promotedText, category.translationKey(), x, y, z, badge, members, alpha,
-                    members != null && !members.isEmpty()
-                            ? members.stream().mapToInt(SoundEntry::priority).max().orElse(5)
-                            : 5);
+                    maxMemberPriority(members));
+        }
+
+        private static int maxMemberPriority(List<SoundEntry> members) {
+            if (members == null || members.isEmpty()) {
+                return 5;
+            }
+            int max = Integer.MIN_VALUE;
+            for (int i = 0, size = members.size(); i < size; i++) {
+                max = Math.max(max, members.get(i).priority());
+            }
+            return max;
         }
 
         public int count() {
@@ -384,13 +393,17 @@ public final class BattlefieldClusterLOD {
         if (sounds == null || sounds.isEmpty()) {
             return List.of();
         }
-        List<SpotlightZone> result = new ArrayList<>();
-        for (SoundEntry s : sounds) {
+        List<SpotlightZone> result = null;
+        for (int i = 0, size = sounds.size(); i < size; i++) {
+            SoundEntry s = sounds.get(i);
             if (s != null && isCriticalThreat(s.soundId())) {
+                if (result == null) {
+                    result = new ArrayList<>(4);
+                }
                 result.add(new SpotlightZone(s.x(), s.y(), s.z(), s.soundId()));
             }
         }
-        return Collections.unmodifiableList(result);
+        return result == null ? List.of() : Collections.unmodifiableList(result);
     }
 
     /**
@@ -502,57 +515,203 @@ public final class BattlefieldClusterLOD {
 
         // Fast-path: below threshold and no spotlights active
         if (sounds.size() < threshold && spotlights.isEmpty()) {
-            List<SoundEntry> valid = new ArrayList<>(sounds.size());
-            for (SoundEntry s : sounds) {
-                if (s != null) valid.add(s);
-            }
-            return new ProcessedBattlefield(List.of(), valid, List.of());
+            return fastUnclusteredResult(sounds);
         }
 
         // 2. Spatial Binning by 2.5m grid cell & ChorusCategory
         Map<GridKey, List<SoundEntry>> gridBuckets = new LinkedHashMap<>(Math.min(sounds.size(), 64));
-        for (SoundEntry s : sounds) {
+        for (int i = 0, size = sounds.size(); i < size; i++) {
+            SoundEntry s = sounds.get(i);
             if (s == null) continue;
             ChorusCategory cat = categorize(s.soundId(), s.semantics());
             GridKey key = gridKey(s.x(), s.y(), s.z(), cat);
-            gridBuckets.computeIfAbsent(key, k -> new ArrayList<>()).add(s);
+            gridBuckets.computeIfAbsent(key, k -> new ArrayList<>(4)).add(s);
         }
 
-        List<ChorusCluster> clusters = new ArrayList<>();
-        List<SoundEntry> unclustered = new ArrayList<>();
+        return finalizeBuckets(gridBuckets, threshold, spotlights);
+    }
+
+    private static ProcessedBattlefield fastUnclusteredResult(List<SoundEntry> sounds) {
+        List<SoundEntry> valid = null;
+        int size = sounds.size();
+        for (int i = 0; i < size; i++) {
+            SoundEntry s = sounds.get(i);
+            if (s == null) {
+                if (valid == null) {
+                    valid = new ArrayList<>(size);
+                    for (int j = 0; j < i; j++) {
+                        valid.add(sounds.get(j));
+                    }
+                }
+            } else if (valid != null) {
+                valid.add(s);
+            }
+        }
+        return new ProcessedBattlefield(List.of(), valid == null ? sounds : valid, List.of());
+    }
+
+    private static ProcessedBattlefield finalizeBuckets(
+            Map<GridKey, List<SoundEntry>> gridBuckets,
+            int threshold,
+            List<SpotlightZone> spotlights
+    ) {
+        List<ChorusCluster> clusters = null;
+        List<SoundEntry> unclustered = null;
 
         // 3. Density promotion and spotlight suppression
         for (Map.Entry<GridKey, List<SoundEntry>> entry : gridBuckets.entrySet()) {
             List<SoundEntry> bucket = entry.getValue();
             ChorusCategory cat = entry.getKey().category();
 
-            if (bucket.size() >= threshold) {
+            int bsize = bucket.size();
+            if (bsize >= threshold) {
                 double sumX = 0.0;
                 double sumY = 0.0;
                 double sumZ = 0.0;
-                for (SoundEntry s : bucket) {
+                for (int i = 0; i < bsize; i++) {
+                    SoundEntry s = bucket.get(i);
                     sumX += s.x();
                     sumY += s.y();
                     sumZ += s.z();
                 }
-                int count = bucket.size();
-                double avgX = sumX / count;
-                double avgY = sumY / count;
-                double avgZ = sumZ / count;
+                double avgX = sumX / bsize;
+                double avgY = sumY / bsize;
+                double avgZ = sumZ / bsize;
 
-                MultiplierBadge badge = MultiplierBadge.of(count);
-                float clusterAlpha = evaluateSpotlightAlpha(avgX, avgY, avgZ, bucket.getFirst().soundId(), spotlights, 1.0f);
+                MultiplierBadge badge = MultiplierBadge.of(bsize);
+                float clusterAlpha = spotlights.isEmpty()
+                        ? 1.0f
+                        : evaluateSpotlightAlpha(avgX, avgY, avgZ, bucket.getFirst().soundId(), spotlights, 1.0f);
+                if (clusters == null) {
+                    clusters = new ArrayList<>(4);
+                }
                 clusters.add(new ChorusCluster(cat, cat.defaultTitle(), avgX, avgY, avgZ, badge, bucket, clusterAlpha));
             } else {
-                for (SoundEntry s : bucket) {
-                    float alpha = evaluateSpotlightAlpha(s.x(), s.y(), s.z(), s.soundId(), spotlights, s.alpha());
-                    int priority = evaluateSpotlightPriority(s.x(), s.y(), s.z(), s.soundId(), spotlights, s.priority());
-                    unclustered.add(s.withAlpha(alpha).withPriority(priority));
+                if (unclustered == null) {
+                    unclustered = new ArrayList<>(bsize);
+                }
+                if (spotlights.isEmpty()) {
+                    unclustered.addAll(bucket);
+                } else {
+                    for (int i = 0; i < bsize; i++) {
+                        SoundEntry s = bucket.get(i);
+                        float alpha = evaluateSpotlightAlpha(s.x(), s.y(), s.z(), s.soundId(), spotlights, s.alpha());
+                        int priority = evaluateSpotlightPriority(s.x(), s.y(), s.z(), s.soundId(), spotlights, s.priority());
+                        unclustered.add(alpha == s.alpha() && priority == s.priority()
+                                ? s
+                                : s.withAlpha(alpha).withPriority(priority));
+                    }
                 }
             }
         }
 
-        return new ProcessedBattlefield(clusters, unclustered, spotlights);
+        return new ProcessedBattlefield(
+                clusters == null ? List.of() : clusters,
+                unclustered == null ? List.of() : unclustered,
+                spotlights
+        );
+    }
+
+    /**
+     * Fast zero-allocation pre-check determining whether any grid bucket in {@code subtitles}
+     * can reach the default cluster promotion threshold.
+     */
+    public static boolean hasPotentialCluster(List<SubtitlePool.Subtitle> subtitles) {
+        return hasPotentialCluster(subtitles, DEFAULT_PROMOTION_THRESHOLD);
+    }
+
+    /**
+     * Fast zero-allocation pre-check determining whether any grid bucket in {@code subtitles}
+     * can reach {@code promotionThreshold}.
+     */
+    public static boolean hasPotentialCluster(List<SubtitlePool.Subtitle> subtitles, int promotionThreshold) {
+        if (subtitles == null || subtitles.isEmpty()) {
+            return false;
+        }
+        int threshold = Math.max(1, promotionThreshold);
+        int size = subtitles.size();
+        int maxPossibleTotal = 0;
+        for (int i = 0; i < size; i++) {
+            SubtitlePool.Subtitle sub = subtitles.get(i);
+            if (sub == null) {
+                continue;
+            }
+            int repeats = sub.repeatCount();
+            int weight;
+            if (repeats > 1 && categorize(sub.soundId(), sub.semantics()) != ChorusCategory.GENERIC_CHORUS) {
+                weight = Math.min(repeats, 16);
+            } else {
+                weight = 1;
+            }
+            if (weight >= threshold) {
+                return true;
+            }
+            maxPossibleTotal += weight;
+        }
+        if (maxPossibleTotal < threshold) {
+            return false;
+        }
+
+        for (int i = 0; i < size; i++) {
+            SubtitlePool.Subtitle si = subtitles.get(i);
+            if (si == null) {
+                continue;
+            }
+            long gxi = gridCoord(si.x());
+            long gyi = gridCoord(si.y());
+            long gzi = gridCoord(si.z());
+            boolean alreadyCheckedCell = false;
+            for (int j = 0; j < i; j++) {
+                SubtitlePool.Subtitle sj = subtitles.get(j);
+                if (sj != null && gridCoord(sj.x()) == gxi && gridCoord(sj.y()) == gyi && gridCoord(sj.z()) == gzi) {
+                    alreadyCheckedCell = true;
+                    break;
+                }
+            }
+            if (alreadyCheckedCell) {
+                continue;
+            }
+
+            int cellUpperBound = si.repeatCount() > 1 ? Math.min(si.repeatCount(), 16) : 1;
+            for (int k = i + 1; k < size; k++) {
+                SubtitlePool.Subtitle sk = subtitles.get(k);
+                if (sk != null && gridCoord(sk.x()) == gxi && gridCoord(sk.y()) == gyi && gridCoord(sk.z()) == gzi) {
+                    cellUpperBound += sk.repeatCount() > 1 ? Math.min(sk.repeatCount(), 16) : 1;
+                }
+            }
+            if (cellUpperBound < threshold) {
+                continue;
+            }
+
+            int wZombie = 0;
+            int wBeast = 0;
+            int wArrow = 0;
+            int wArthropod = 0;
+            int wCollapse = 0;
+            int wGeneric = 0;
+            for (int k = i; k < size; k++) {
+                SubtitlePool.Subtitle sk = subtitles.get(k);
+                if (sk == null || gridCoord(sk.x()) != gxi || gridCoord(sk.y()) != gyi || gridCoord(sk.z()) != gzi) {
+                    continue;
+                }
+                ChorusCategory cat = categorize(sk.soundId(), sk.semantics());
+                int weight = (cat != ChorusCategory.GENERIC_CHORUS && sk.repeatCount() > 1)
+                        ? Math.min(sk.repeatCount(), 16)
+                        : 1;
+                int bucketCount = switch (cat) {
+                    case ZOMBIE_CHORUS -> (wZombie += weight);
+                    case BEAST_ROAR -> (wBeast += weight);
+                    case ARROW_RAIN -> (wArrow += weight);
+                    case ARTHROPOD_SWARM -> (wArthropod += weight);
+                    case STRUCTURE_COLLAPSE -> (wCollapse += weight);
+                    case GENERIC_CHORUS -> (wGeneric += weight);
+                };
+                if (bucketCount >= threshold) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -569,21 +728,68 @@ public final class BattlefieldClusterLOD {
         if (subtitles == null || subtitles.isEmpty()) {
             return ProcessedBattlefield.EMPTY;
         }
-        List<SoundEntry> entries = new ArrayList<>(subtitles.size());
-        for (SubtitlePool.Subtitle sub : subtitles) {
-            if (sub != null) {
+        int threshold = Math.max(1, promotionThreshold);
+        int size = subtitles.size();
+        List<SpotlightZone> spotlights = null;
+        int totalEntries = 0;
+        for (int i = 0; i < size; i++) {
+            SubtitlePool.Subtitle sub = subtitles.get(i);
+            if (sub == null) {
+                continue;
+            }
+            int repeats = sub.repeatCount();
+            if (repeats > 1 && categorize(sub.soundId(), sub.semantics()) != ChorusCategory.GENERIC_CHORUS) {
+                totalEntries += Math.min(repeats, 16);
+            } else {
+                totalEntries += 1;
+            }
+            if (isCriticalThreat(sub.soundId())) {
+                if (spotlights == null) {
+                    spotlights = new ArrayList<>(4);
+                }
+                spotlights.add(new SpotlightZone(sub.x(), sub.y(), sub.z(), sub.soundId()));
+            }
+        }
+        if (totalEntries == 0) {
+            return ProcessedBattlefield.EMPTY;
+        }
+        List<SpotlightZone> spotlightList = spotlights == null ? List.of() : Collections.unmodifiableList(spotlights);
+        if (totalEntries < threshold && spotlightList.isEmpty()) {
+            List<SoundEntry> unclustered = new ArrayList<>(totalEntries);
+            for (int i = 0; i < size; i++) {
+                SubtitlePool.Subtitle sub = subtitles.get(i);
+                if (sub == null) continue;
                 SoundEntry base = SoundEntry.fromSubtitle(sub);
-                entries.add(base);
+                unclustered.add(base);
                 int repeats = sub.repeatCount();
                 if (repeats > 1 && categorize(sub.soundId(), sub.semantics()) != ChorusCategory.GENERIC_CHORUS) {
                     int extra = Math.min(repeats - 1, 15);
                     for (int r = 0; r < extra; r++) {
-                        entries.add(base);
+                        unclustered.add(base);
                     }
                 }
             }
+            return new ProcessedBattlefield(List.of(), unclustered, List.of());
         }
-        return process(entries, promotionThreshold);
+
+        Map<GridKey, List<SoundEntry>> gridBuckets = new LinkedHashMap<>(Math.min(size, 64));
+        for (int i = 0; i < size; i++) {
+            SubtitlePool.Subtitle sub = subtitles.get(i);
+            if (sub == null) continue;
+            SoundEntry base = SoundEntry.fromSubtitle(sub);
+            ChorusCategory cat = categorize(base.soundId(), base.semantics());
+            GridKey key = gridKey(base.x(), base.y(), base.z(), cat);
+            List<SoundEntry> bucket = gridBuckets.computeIfAbsent(key, k -> new ArrayList<>(4));
+            bucket.add(base);
+            int repeats = sub.repeatCount();
+            if (repeats > 1 && cat != ChorusCategory.GENERIC_CHORUS) {
+                int extra = Math.min(repeats - 1, 15);
+                for (int r = 0; r < extra; r++) {
+                    bucket.add(base);
+                }
+            }
+        }
+        return finalizeBuckets(gridBuckets, threshold, spotlightList);
     }
 
     /**

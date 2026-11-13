@@ -1,6 +1,5 @@
 package dev.kunkun.onomixel.custom;
 
-import dev.kunkun.onomixel.subtitle.VisualType;
 import dev.kunkun.onomixel.subtitle.VisualTypeRegistry;
 
 import java.io.IOException;
@@ -184,7 +183,7 @@ public final class SoundCustomizationManager {
         }
         REGISTERED_COLOR_SOUNDS.clear();
 
-        // Synchronize visual colors and styles into VisualTypeRegistry
+        // Synchronize visual colors into VisualTypeRegistry (types stay evaluated via SoundCustomizationManager.resolve)
         for (CustomWordRule rule : aggregated) {
             if (rule.isExact() && (rule.vibrantColor() != null || rule.pastelColor() != null)) {
                 int vibrant = rule.vibrantColor() != null ? rule.vibrantColor() : 0xFFFFFF;
@@ -192,13 +191,8 @@ public final class SoundCustomizationManager {
                 VisualTypeRegistry.registerSoundColor(rule.exactId(), vibrant, pastel);
                 REGISTERED_COLOR_SOUNDS.add(rule.exactId());
             }
-            if (rule.isExact() && rule.visualTypeId() != null) {
-                VisualType vt = VisualTypeRegistry.getType(rule.visualTypeId());
-                if (vt != null) {
-                    VisualTypeRegistry.registerSound(rule.exactId(), vt);
-                }
-            }
         }
+        VisualTypeRegistry.invalidateResolutionCaches();
 
         LOGGER.log(System.Logger.Level.INFO, "Onomixel: Recompiled {0} custom onomatopoeia rules (Tier1 API: {1}, Tier2 Pack: {2}, Tier3 User: {3}).",
                 compiled.size(), TIER1_API_RULES.size(), TIER2_PACK_RULES.size(), TIER3_USER_RULES.size());
@@ -216,6 +210,7 @@ public final class SoundCustomizationManager {
         }
         REGISTERED_COLOR_SOUNDS.clear();
         ACTIVE_INDEX.set(CompiledWordOverrideIndex.EMPTY);
+        VisualTypeRegistry.invalidateResolutionCaches();
     }
 
     public static int activeRuleCount() {

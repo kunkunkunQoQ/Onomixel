@@ -2,6 +2,8 @@ package dev.kunkun.onomixel.subtitle;
 
 import dev.kunkun.onomixel.custom.CustomWordRule;
 import dev.kunkun.onomixel.custom.SoundCustomizationManager;
+import dev.kunkun.onomixel.sound.BoundedLookupCache;
+import dev.kunkun.onomixel.sound.SoundDefinitions;
 import dev.kunkun.onomixel.sound.SoundSemantics;
 
 import java.util.Collection;
@@ -24,10 +26,31 @@ public final class VisualTypeRegistry {
     private static final Map<String, VisualColor> SOUND_COLORS = new ConcurrentHashMap<>();
     private static final List<Rule> PATTERNS = new CopyOnWriteArrayList<>();
 
+    private record ColorCacheEntry(VisualType baseType, VisualColor color) {}
+
+    private static final BoundedLookupCache<String, VisualType> RESOLVED_TYPE_CACHE =
+            new BoundedLookupCache<>(256, 4096, 512);
+    private static final BoundedLookupCache<String, ColorCacheEntry> RESOLVED_COLOR_CACHE =
+            new BoundedLookupCache<>(256, 4096, 512);
+
     public record Rule(Predicate<String> matcher, VisualType type) {}
 
     static {
         initBuiltins();
+    }
+
+    /** Invalidates derived sound-to-type and color caches when rules or overrides change. */
+    public static void invalidateResolutionCaches() {
+        RESOLVED_TYPE_CACHE.clear();
+        RESOLVED_COLOR_CACHE.clear();
+    }
+
+    /** Invalidates derived caches for a single sound ID. */
+    public static void invalidateSound(String soundId) {
+        if (soundId != null) {
+            RESOLVED_TYPE_CACHE.remove(soundId);
+            RESOLVED_COLOR_CACHE.remove(soundId);
+        }
     }
 
     /**
@@ -38,6 +61,7 @@ public final class VisualTypeRegistry {
         SOUND_MAP.clear();
         SOUND_COLORS.clear();
         PATTERNS.clear();
+        invalidateResolutionCaches();
         initBuiltins();
     }
 
@@ -138,7 +162,10 @@ public final class VisualTypeRegistry {
      */
     public static void registerType(VisualType type) {
         if (type != null) {
-            TYPES.put(type.id(), type);
+            VisualType previous = TYPES.put(type.id(), type);
+            if (previous != type) {
+                invalidateResolutionCaches();
+            }
         }
     }
 
@@ -151,6 +178,7 @@ public final class VisualTypeRegistry {
     public static void registerSound(String soundId, VisualType type) {
         if (soundId != null && type != null) {
             SOUND_MAP.put(soundId, type);
+            invalidateSound(soundId);
         }
     }
 
@@ -164,6 +192,7 @@ public final class VisualTypeRegistry {
     public static void registerSoundColor(String soundId, int vibrantColor, int pastelColor) {
         if (soundId != null) {
             SOUND_COLORS.put(soundId, new VisualColor(vibrantColor, pastelColor));
+            RESOLVED_COLOR_CACHE.remove(soundId);
         }
     }
 
@@ -173,6 +202,7 @@ public final class VisualTypeRegistry {
     public static void unregisterSoundColor(String soundId) {
         if (soundId != null) {
             SOUND_COLORS.remove(soundId);
+            RESOLVED_COLOR_CACHE.remove(soundId);
         }
     }
 
@@ -181,17 +211,28 @@ public final class VisualTypeRegistry {
      * and then material-semantic resolution.
      */
     public static VisualColor resolveColor(String soundId, VisualType baseType) {
-        if (soundId != null) {
-            VisualColor explicit = SOUND_COLORS.get(soundId);
-            if (explicit != null) return explicit;
-            CustomWordRule customRule = SoundCustomizationManager.resolve(soundId);
-            if (customRule != null && (customRule.vibrantColor() != null || customRule.pastelColor() != null)) {
-                int vibrant = customRule.vibrantColor() != null ? customRule.vibrantColor() : baseType.vibrantColor();
-                int pastel = customRule.pastelColor() != null ? customRule.pastelColor() : vibrant;
-                return new VisualColor(vibrant, pastel);
-            }
+        if (soundId == null) {
+            return new VisualColor(baseType.vibrantColor(), baseType.pastelColor());
         }
-        if (soundId == null || !soundId.startsWith("minecraft:") || !isBuiltin(baseType))
+        ColorCacheEntry cached = RESOLVED_COLOR_CACHE.get(soundId);
+        if (cached != null && cached.baseType() == baseType) {
+            return cached.color();
+        }
+        VisualColor resolved = computeColor(soundId, baseType);
+        RESOLVED_COLOR_CACHE.put(soundId, new ColorCacheEntry(baseType, resolved));
+        return resolved;
+    }
+
+    private static VisualColor computeColor(String soundId, VisualType baseType) {
+        VisualColor explicit = SOUND_COLORS.get(soundId);
+        if (explicit != null) return explicit;
+        CustomWordRule customRule = SoundCustomizationManager.resolve(soundId);
+        if (customRule != null && (customRule.vibrantColor() != null || customRule.pastelColor() != null)) {
+            int vibrant = customRule.vibrantColor() != null ? customRule.vibrantColor() : baseType.vibrantColor();
+            int pastel = customRule.pastelColor() != null ? customRule.pastelColor() : vibrant;
+            return new VisualColor(vibrant, pastel);
+        }
+        if (!soundId.startsWith("minecraft:") || !isBuiltin(baseType))
             return new VisualColor(baseType.vibrantColor(), baseType.pastelColor());
         return MaterialColorResolver.resolve(soundId, baseType);
     }
@@ -205,6 +246,7 @@ public final class VisualTypeRegistry {
     public static void registerRule(Predicate<String> matcher, VisualType type) {
         if (matcher != null && type != null) {
             PATTERNS.add(new Rule(matcher, type));
+            invalidateResolutionCaches();
         }
     }
 
@@ -216,7 +258,26 @@ public final class VisualTypeRegistry {
      */
     public static VisualType resolve(String soundId) {
         if (soundId == null) return VisualTypes.IMPACT;
-        CustomWordRule customRule = SoundCustomizationManager.resolve(soundId);
+        VisualType cached = RESOLVED_TYPE_CACHE.get(soundId);
+        if (cached != null) return cached;
+        VisualType resolved = computeResolve(soundId, SoundCustomizationManager.resolve(soundId));
+        RESOLVED_TYPE_CACHE.put(soundId, resolved);
+        return resolved;
+    }
+
+    /**
+     * Resolves a sound ID to its corresponding VisualType using a pre-resolved custom rule on cache miss.
+     */
+    public static VisualType resolve(String soundId, CustomWordRule customRule) {
+        if (soundId == null) return VisualTypes.IMPACT;
+        VisualType cached = RESOLVED_TYPE_CACHE.get(soundId);
+        if (cached != null) return cached;
+        VisualType resolved = computeResolve(soundId, customRule);
+        RESOLVED_TYPE_CACHE.put(soundId, resolved);
+        return resolved;
+    }
+
+    private static VisualType computeResolve(String soundId, CustomWordRule customRule) {
         if (customRule != null && customRule.visualTypeId() != null) {
             VisualType customVt = TYPES.get(customRule.visualTypeId());
             if (customVt != null) return customVt;
@@ -226,6 +287,8 @@ public final class VisualTypeRegistry {
         for (Rule rule : PATTERNS) {
             if (rule.matcher.test(soundId)) return rule.type;
         }
+        VisualType inferred = SoundDefinitions.inferredVisualType(soundId);
+        if (inferred != null) return inferred;
         return switch (SoundSemantics.classify(soundId)) {
             case INTERACTION -> VisualTypes.INTERACTION;
             case BREAK -> VisualTypes.BREAK;

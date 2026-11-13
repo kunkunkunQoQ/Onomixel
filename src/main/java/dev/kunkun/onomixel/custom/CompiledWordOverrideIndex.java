@@ -1,23 +1,29 @@
 package dev.kunkun.onomixel.custom;
 
+import dev.kunkun.onomixel.sound.BoundedLookupCache;
+
 import java.util.*;
 
 /**
  * Immutable compiled fast-path index for custom onomatopoeia rules.
- * Provides nanosecond O(1) exact lookups and prioritized pattern evaluation with zero allocation.
+ * Provides nanosecond O(1) exact lookups and cached pattern evaluation with bounded memory.
  * Zero Minecraft runtime dependencies for pure JVM testability.
  */
 public final class CompiledWordOverrideIndex {
 
     public static final CompiledWordOverrideIndex EMPTY = new CompiledWordOverrideIndex(List.of());
+    private static final int PATTERN_CACHE_CAP = 2048;
+    private static final int PATTERN_CACHE_EVICT_BATCH = 256;
 
     private final Map<String, CustomWordRule> exactMatches;
     private final List<CustomWordRule> patternMatches;
+    private final BoundedLookupCache<String, CustomWordRule> patternCache;
 
     public CompiledWordOverrideIndex(List<CustomWordRule> rules) {
         if (rules == null || rules.isEmpty()) {
             this.exactMatches = Map.of();
             this.patternMatches = List.of();
+            this.patternCache = null;
             return;
         }
 
@@ -42,6 +48,9 @@ public final class CompiledWordOverrideIndex {
 
         this.exactMatches = Map.copyOf(exacts);
         this.patternMatches = List.copyOf(patterns);
+        this.patternCache = this.patternMatches.isEmpty()
+                ? null
+                : new BoundedLookupCache<>(PATTERN_CACHE_CAP, PATTERN_CACHE_EVICT_BATCH);
     }
 
     /**
@@ -59,15 +68,26 @@ public final class CompiledWordOverrideIndex {
             return exact;
         }
 
-        // 2. Pattern match: prioritized linear evaluation
+        if (patternCache == null) {
+            return null;
+        }
+
+        Object cached = patternCache.getRaw(soundId);
+        if (cached != null) {
+            return cached == BoundedLookupCache.NULL_SENTINEL ? null : (CustomWordRule) cached;
+        }
+
+        // 2. Pattern match on cold miss: prioritized linear evaluation, negative-cached afterwards
+        CustomWordRule matched = null;
         for (int i = 0; i < patternMatches.size(); i++) {
             CustomWordRule rule = patternMatches.get(i);
             if (rule.matches(soundId)) {
-                return rule;
+                matched = rule;
+                break;
             }
         }
-
-        return null;
+        patternCache.putNullable(soundId, matched);
+        return matched;
     }
 
     /**

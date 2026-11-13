@@ -57,7 +57,7 @@ public record CaptionSettings(boolean enabled, DisplayMode mode, ColorStyle styl
     private static final CaptionSettings DEFAULTS = new CaptionSettings(
             true, DisplayMode.LIGHTWEIGHT, ColorStyle.VIBRANT, 24, 12,
             1_000_000_000L, 1, 0.9, true, true, DEFAULT_DURATIONS,
-            true, true, true, true, true, AestheticStyle.SHONEN, ColorblindMode.OFF
+            false, true, true, true, true, AestheticStyle.SHONEN, ColorblindMode.OFF
     );
 
     public static CaptionSettings defaults() {
