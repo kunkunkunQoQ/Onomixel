@@ -1,10 +1,16 @@
 package dev.kunkun.onomixel.subtitle;
 
+import dev.kunkun.onomixel.custom.CustomWordRule;
+import dev.kunkun.onomixel.custom.SoundCustomizationManager;
 import dev.kunkun.onomixel.sound.BoundedLookupCache;
 
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Predicate;
 
 /**
  * P0/P1 Comprehensive high-threat sound classification for off-screen radar and priority tactical alerts.
@@ -29,7 +35,12 @@ public final class ThreatRegistry {
         }
     }
 
+    private record ApiThreatRule(Predicate<String> matcher, ThreatInfo info) {}
+
     private static final Map<String, ThreatInfo> STATIC_INDEX;
+    private static final Map<String, ThreatInfo> API_EXACT_THREATS = new ConcurrentHashMap<>();
+    private static final CopyOnWriteArrayList<ApiThreatRule> API_RULE_THREATS = new CopyOnWriteArrayList<>();
+    private static volatile boolean hasApiThreats;
     private static final BoundedLookupCache<String, ThreatInfo> FALLBACK_CACHE =
             new BoundedLookupCache<>(256, 4096, 512);
 
@@ -53,8 +64,11 @@ public final class ThreatRegistry {
         // Cat 3: 持续引信/倒计时
         r.add("minecraft:entity.tnt.primed", ThreatLevel.CRITICAL, 3_000_000_000L, "onomixel.threat.tnt_primed");
         r.add("minecraft:entity.creeper.primed", ThreatLevel.CRITICAL, 1_500_000_000L, "onomixel.threat.creeper_primed");
+        r.add("minecraft:entity.warden.sonic_charge", ThreatLevel.CRITICAL, 1_700_000_000L, "onomixel.threat.warden_sonic_charge");
         r.add("minecraft:entity.ghast.warn", ThreatLevel.CRITICAL, 1_200_000_000L, "onomixel.threat.ghast");
         r.add("minecraft:entity.evoker.prepare_attack", ThreatLevel.ELEVATED, 1_200_000_000L, "onomixel.threat.evoker_fangs");
+        r.add("minecraft:entity.goat.prepare_ram", ThreatLevel.ELEVATED, 1_200_000_000L, "onomixel.threat.goat_ram");
+        r.add("minecraft:entity.goat.screaming.prepare_ram", ThreatLevel.ELEVATED, 1_200_000_000L, "onomixel.threat.goat_ram");
         r.add("minecraft:entity.breeze.charge", ThreatLevel.ELEVATED, 1_000_000_000L, "onomixel.threat.breeze");
 
         // Cat 6: Boss 史诗级
@@ -86,6 +100,11 @@ public final class ThreatRegistry {
         r.add("minecraft:entity.piglin_brute.angry", ThreatLevel.ELEVATED, 800_000_000L, "onomixel.threat.piglin_brute");
         r.add("minecraft:entity.warden.heartbeat", ThreatLevel.ELEVATED, 800_000_000L, "onomixel.threat.generic_elevated");
         r.add("minecraft:entity.warden.sniff", ThreatLevel.ELEVATED, 800_000_000L, "onomixel.threat.generic_elevated");
+        r.add("minecraft:block.creaking_heart.spawn", ThreatLevel.ELEVATED, 1_000_000_000L, "onomixel.threat.creaking_spawn");
+        r.add("minecraft:entity.zombie.break_wooden_door", ThreatLevel.ELEVATED, 1_000_000_000L, "onomixel.threat.zombie_break_door");
+        r.add("minecraft:entity.ender_pearl.throw", ThreatLevel.ELEVATED, 800_000_000L, "onomixel.threat.ender_pearl");
+        r.add("minecraft:entity.player.teleport", ThreatLevel.ELEVATED, 800_000_000L, "onomixel.threat.player_teleport");
+        r.add("minecraft:entity.enderman.teleport", ThreatLevel.ELEVATED, 700_000_000L, "onomixel.threat.enderman_teleport");
 
         // Cat 2: 远程发射/狙击 (700ms)
         r.add("minecraft:entity.skeleton.shoot", ThreatLevel.ELEVATED, 700_000_000L, "onomixel.threat.skeleton_shoot");
@@ -98,6 +117,7 @@ public final class ThreatRegistry {
         r.add("minecraft:item.trident.throw", ThreatLevel.ELEVATED, 700_000_000L, "onomixel.threat.drowned_trident");
         r.add("minecraft:entity.blaze.shoot", ThreatLevel.ELEVATED, 700_000_000L, "onomixel.threat.blaze_shoot");
         r.add("minecraft:entity.breeze.shoot", ThreatLevel.ELEVATED, 700_000_000L, "onomixel.threat.breeze");
+        r.add("minecraft:entity.shulker.shoot", ThreatLevel.ELEVATED, 700_000_000L, "onomixel.threat.shulker");
         r.add("minecraft:entity.witch.throw", ThreatLevel.ELEVATED, 700_000_000L, "onomixel.threat.witch_throw");
         r.add("minecraft:entity.ghast.shoot", ThreatLevel.CRITICAL, 700_000_000L, "onomixel.threat.ghast");
 
@@ -121,8 +141,77 @@ public final class ThreatRegistry {
         return resolveThreatInfo(soundId).level();
     }
 
+    /**
+     * Registers or overrides a radar threat classification via Java API.
+     */
+    public static void registerThreat(String soundId, ThreatLevel level, long durationNanos, String threatNameKey) {
+        Objects.requireNonNull(soundId, "soundId cannot be null");
+        Objects.requireNonNull(level, "level cannot be null");
+        String normalized = soundId.trim();
+        if (normalized.isEmpty()) {
+            throw new IllegalArgumentException("soundId cannot be blank");
+        }
+        ThreatInfo info = buildCustomThreatInfo(level, durationNanos, threatNameKey);
+        API_EXACT_THREATS.put(normalized, info);
+        hasApiThreats = true;
+        FALLBACK_CACHE.clear();
+    }
+
+    /**
+     * Registers a predicate-based radar threat rule via Java API.
+     */
+    public static void registerThreatRule(Predicate<String> matcher, ThreatLevel level, long durationNanos, String threatNameKey) {
+        Objects.requireNonNull(matcher, "matcher cannot be null");
+        Objects.requireNonNull(level, "level cannot be null");
+        ThreatInfo info = buildCustomThreatInfo(level, durationNanos, threatNameKey);
+        API_RULE_THREATS.add(0, new ApiThreatRule(matcher, info));
+        hasApiThreats = true;
+        FALLBACK_CACHE.clear();
+    }
+
+    public static void resetApiThreatsForTesting() {
+        API_EXACT_THREATS.clear();
+        API_RULE_THREATS.clear();
+        hasApiThreats = false;
+        FALLBACK_CACHE.clear();
+    }
+
+    private static ThreatInfo buildCustomThreatInfo(ThreatLevel level, long durationNanos, String threatNameKey) {
+        if (level == ThreatLevel.NONE) {
+            return ThreatInfo.NONE;
+        }
+        long resolvedDur = durationNanos > 0L
+                ? durationNanos
+                : (level == ThreatLevel.TACTICAL ? 1_200_000_000L : 800_000_000L);
+        String key = (threatNameKey != null && !threatNameKey.isBlank())
+                ? threatNameKey.trim()
+                : (level == ThreatLevel.CRITICAL ? "onomixel.threat.generic_critical" : "onomixel.threat.generic_elevated");
+        return new ThreatInfo(level, resolvedDur, key);
+    }
+
     private static ThreatInfo resolveThreatInfo(String soundId) {
         if (soundId == null || soundId.isEmpty()) return ThreatInfo.NONE;
+
+        if (SoundCustomizationManager.hasRadarOverrides()) {
+            CustomWordRule customRule = SoundCustomizationManager.resolve(soundId);
+            if (customRule != null && customRule.radarLevel() != null) {
+                long dur = customRule.radarDurationNanos() != null ? customRule.radarDurationNanos() : 0L;
+                return buildCustomThreatInfo(customRule.radarLevel(), dur, customRule.radarLabel());
+            }
+        }
+
+        if (hasApiThreats) {
+            ThreatInfo exactApi = API_EXACT_THREATS.get(soundId);
+            if (exactApi != null) {
+                return exactApi;
+            }
+            for (ApiThreatRule rule : API_RULE_THREATS) {
+                if (rule.matcher().test(soundId)) {
+                    return rule.info();
+                }
+            }
+        }
+
         ThreatInfo info = STATIC_INDEX.get(soundId);
         if (info != null) return info;
         ThreatInfo cached = FALLBACK_CACHE.get(soundId);
@@ -150,6 +239,7 @@ public final class ThreatRegistry {
         if (id.contains("creeper.primed")
                 || id.contains("tnt.primed")
                 || id.contains("generic.explode")
+                || id.contains("warden.sonic_charge")
                 || id.contains("warden.sonic_boom")
                 || id.contains("warden.roar")
                 || id.contains("warden.emerge")
@@ -177,11 +267,14 @@ public final class ThreatRegistry {
                 || id.contains("blaze.shoot")
                 || id.contains("breeze.shoot")
                 || id.contains("breeze.charge")
+                || id.contains("shulker.shoot")
                 || id.contains("ravager.roar")
                 || id.contains("ravager.attack")
                 || id.contains("witch.throw")
                 || id.contains("evoker_fangs.attack")
                 || id.contains("evoker.prepare_attack")
+                || id.contains("goat.prepare_ram")
+                || id.contains("goat.screaming.prepare_ram")
                 || id.contains("pillager.shoot")
                 || id.contains("crossbow.shoot")
                 || id.contains("guardian.attack")
@@ -190,7 +283,12 @@ public final class ThreatRegistry {
                 || id.contains("piglin_brute.angry")
                 || id.contains("enderman.scream")
                 || id.contains("enderman.stare")
+                || id.contains("enderman.teleport")
+                || id.contains("ender_pearl.throw")
+                || id.contains("player.teleport")
                 || id.contains("shulker_bullet.hit")
+                || id.contains("creaking_heart.spawn")
+                || id.contains("zombie.break_wooden_door")
                 || id.contains("raid.horn")
                 || id.contains("warden.heartbeat")
                 || id.contains("warden.sniff")) {
@@ -221,9 +319,15 @@ public final class ThreatRegistry {
 
         // Cat 3: 持续引信/倒计时
         if (id.contains("tnt.primed")) return 3_000_000_000L; // 3000ms
+        if (id.contains("warden.sonic_charge")) return 1_700_000_000L; // 1700ms (34 ticks)
         if (id.contains("creeper.primed")) return 1_500_000_000L; // 1500ms (30 ticks)
-        if (id.contains("ghast.warn") || id.contains("evoker.prepare_attack")) return 1_200_000_000L; // 1200ms
-        if (id.contains("breeze.charge")) return 1_000_000_000L; // 1000ms
+        if (id.contains("ghast.warn")
+                || id.contains("evoker.prepare_attack")
+                || id.contains("goat.prepare_ram")
+                || id.contains("goat.screaming.prepare_ram")) return 1_200_000_000L; // 1200ms
+        if (id.contains("breeze.charge")
+                || id.contains("creaking_heart.spawn")
+                || id.contains("zombie.break_wooden_door")) return 1_000_000_000L; // 1000ms
 
         // Cat 6: Boss 史诗级
         if (id.contains("wither.spawn") || id.contains("warden.emerge")) return 2_000_000_000L; // 2000ms
@@ -243,8 +347,10 @@ public final class ThreatRegistry {
         if (id.contains("ravager.roar") || id.contains("ravager.attack")) return 850_000_000L; // 850ms
         if (id.contains("piglin_brute.angry")
                 || id.contains("warden.heartbeat")
-                || id.contains("warden.sniff")) return 800_000_000L; // 800ms
-        if (id.contains("phantom.bite")) return 700_000_000L; // 700ms
+                || id.contains("warden.sniff")
+                || id.contains("ender_pearl.throw")
+                || id.contains("player.teleport")) return 800_000_000L; // 800ms
+        if (id.contains("phantom.bite") || id.contains("enderman.teleport")) return 700_000_000L; // 700ms
 
         // Cat 2: 远程发射/狙击 (700ms)
         if (id.contains("skeleton.shoot")
@@ -257,6 +363,7 @@ public final class ThreatRegistry {
                 || id.contains("trident.throw")
                 || id.contains("blaze.shoot")
                 || id.contains("breeze.shoot")
+                || id.contains("shulker.shoot")
                 || id.contains("witch.throw")
                 || id.contains("ghast.shoot")
                 || id.contains("wither.shoot")) return 700_000_000L; // 700ms
@@ -301,6 +408,7 @@ public final class ThreatRegistry {
         if (id.contains("generic.explode")) return "onomixel.threat.explode";
 
         // Bosses
+        if (id.contains("warden.sonic_charge")) return "onomixel.threat.warden_sonic_charge";
         if (id.contains("warden.sonic_boom")) return "onomixel.threat.warden_sonic";
         if (id.contains("warden.roar")) return "onomixel.threat.warden_roar";
         if (id.contains("warden.emerge")) return "onomixel.threat.warden_emerge";
@@ -336,7 +444,13 @@ public final class ThreatRegistry {
         if (id.contains("guardian.attack") || id.contains("elder_guardian.curse")) return "onomixel.threat.guardian";
         if (id.contains("piglin_brute.angry")) return "onomixel.threat.piglin_brute";
         if (id.contains("enderman.scream") || id.contains("enderman.stare")) return "onomixel.threat.enderman_scream";
-        if (id.contains("shulker_bullet.hit")) return "onomixel.threat.shulker";
+        if (id.contains("enderman.teleport")) return "onomixel.threat.enderman_teleport";
+        if (id.contains("ender_pearl.throw")) return "onomixel.threat.ender_pearl";
+        if (id.contains("player.teleport")) return "onomixel.threat.player_teleport";
+        if (id.contains("shulker.shoot") || id.contains("shulker_bullet.hit")) return "onomixel.threat.shulker";
+        if (id.contains("goat.prepare_ram") || id.contains("goat.screaming.prepare_ram")) return "onomixel.threat.goat_ram";
+        if (id.contains("creaking_heart.spawn")) return "onomixel.threat.creaking_spawn";
+        if (id.contains("zombie.break_wooden_door")) return "onomixel.threat.zombie_break_door";
 
         // Lightning
         if (id.contains("lightning_bolt.thunder") || id.contains("lightning_bolt.impact")) return "onomixel.threat.lightning";

@@ -391,10 +391,29 @@ public final class BattlefieldClusterLOD {
         return soundKey;
     }
 
+    static boolean isClusterEligible(SubtitlePool.Subtitle sub) {
+        if (sub == null) {
+            return false;
+        }
+        if (SoundCustomizationManager.hasClusterOverrides()) {
+            CustomWordRule rule = SoundCustomizationManager.resolve(sub.soundId());
+            if (rule != null && Boolean.FALSE.equals(rule.clusterable())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     static String resolveSubtitleClusterKey(
             SubtitlePool.Subtitle sub,
             Function<SubtitlePool.Subtitle, String> keyExtractor
     ) {
+        if (SoundCustomizationManager.hasClusterOverrides()) {
+            CustomWordRule rule = SoundCustomizationManager.resolve(sub.soundId());
+            if (rule != null && rule.customClusterGroup() != null) {
+                return "custom_group:" + rule.customClusterGroup();
+            }
+        }
         if (keyExtractor == null) {
             return defaultSubtitleClusterKey(sub);
         }
@@ -886,7 +905,7 @@ public final class BattlefieldClusterLOD {
         int maxPossibleTotal = 0;
         for (int i = 0; i < size; i++) {
             SubtitlePool.Subtitle sub = subtitles.get(i);
-            if (sub == null) {
+            if (!isClusterEligible(sub)) {
                 continue;
             }
             int weight = subtitleWeight(sub);
@@ -901,7 +920,7 @@ public final class BattlefieldClusterLOD {
 
         for (int i = 0; i < size; i++) {
             SubtitlePool.Subtitle si = subtitles.get(i);
-            if (si == null) {
+            if (!isClusterEligible(si)) {
                 continue;
             }
             long gxi = gridCoord(si.x());
@@ -910,7 +929,7 @@ public final class BattlefieldClusterLOD {
             boolean alreadyCheckedCell = false;
             for (int j = 0; j < i; j++) {
                 SubtitlePool.Subtitle sj = subtitles.get(j);
-                if (sj != null && gridCoord(sj.x()) == gxi && gridCoord(sj.y()) == gyi && gridCoord(sj.z()) == gzi) {
+                if (isClusterEligible(sj) && gridCoord(sj.x()) == gxi && gridCoord(sj.y()) == gyi && gridCoord(sj.z()) == gzi) {
                     alreadyCheckedCell = true;
                     break;
                 }
@@ -922,7 +941,7 @@ public final class BattlefieldClusterLOD {
             int cellUpperBound = subtitleWeight(si);
             for (int k = i + 1; k < size; k++) {
                 SubtitlePool.Subtitle sk = subtitles.get(k);
-                if (sk != null && gridCoord(sk.x()) == gxi && gridCoord(sk.y()) == gyi && gridCoord(sk.z()) == gzi) {
+                if (isClusterEligible(sk) && gridCoord(sk.x()) == gxi && gridCoord(sk.y()) == gyi && gridCoord(sk.z()) == gzi) {
                     cellUpperBound += subtitleWeight(sk);
                 }
             }
@@ -950,15 +969,15 @@ public final class BattlefieldClusterLOD {
         if (keyExtractor == null) {
             for (int k = cellStartIndex; k < size; k++) {
                 SubtitlePool.Subtitle sk = subtitles.get(k);
-                if (sk == null || gridCoord(sk.x()) != gx || gridCoord(sk.y()) != gy || gridCoord(sk.z()) != gz) {
+                if (!isClusterEligible(sk) || gridCoord(sk.x()) != gx || gridCoord(sk.y()) != gy || gridCoord(sk.z()) != gz) {
                     continue;
                 }
-                String gk = defaultSubtitleClusterKey(sk);
+                String gk = resolveSubtitleClusterKey(sk, null);
                 boolean seenEarlier = false;
                 for (int prev = cellStartIndex; prev < k; prev++) {
                     SubtitlePool.Subtitle sp = subtitles.get(prev);
-                    if (sp != null && gridCoord(sp.x()) == gx && gridCoord(sp.y()) == gy && gridCoord(sp.z()) == gz
-                            && defaultSubtitleClusterKey(sp).equals(gk)) {
+                    if (isClusterEligible(sp) && gridCoord(sp.x()) == gx && gridCoord(sp.y()) == gy && gridCoord(sp.z()) == gz
+                            && resolveSubtitleClusterKey(sp, null).equals(gk)) {
                         seenEarlier = true;
                         break;
                     }
@@ -972,8 +991,8 @@ public final class BattlefieldClusterLOD {
                 }
                 for (int m = k + 1; m < size; m++) {
                     SubtitlePool.Subtitle sm = subtitles.get(m);
-                    if (sm != null && gridCoord(sm.x()) == gx && gridCoord(sm.y()) == gy && gridCoord(sm.z()) == gz
-                            && defaultSubtitleClusterKey(sm).equals(gk)) {
+                    if (isClusterEligible(sm) && gridCoord(sm.x()) == gx && gridCoord(sm.y()) == gy && gridCoord(sm.z()) == gz
+                            && resolveSubtitleClusterKey(sm, null).equals(gk)) {
                         count += subtitleWeight(sm);
                         if (count >= threshold) {
                             return true;
@@ -987,7 +1006,7 @@ public final class BattlefieldClusterLOD {
         Map<String, Integer> groupCounts = new HashMap<>(8);
         for (int k = cellStartIndex; k < size; k++) {
             SubtitlePool.Subtitle sk = subtitles.get(k);
-            if (sk == null || gridCoord(sk.x()) != gx || gridCoord(sk.y()) != gy || gridCoord(sk.z()) != gz) {
+            if (!isClusterEligible(sk) || gridCoord(sk.x()) != gx || gridCoord(sk.y()) != gy || gridCoord(sk.z()) != gz) {
                 continue;
             }
             String gk = resolveSubtitleClusterKey(sk, keyExtractor);
@@ -1029,12 +1048,16 @@ public final class BattlefieldClusterLOD {
         int size = subtitles.size();
         List<SpotlightZone> spotlights = null;
         int totalEntries = 0;
+        int totalClusterableEntries = 0;
         for (int i = 0; i < size; i++) {
             SubtitlePool.Subtitle sub = subtitles.get(i);
             if (sub == null) {
                 continue;
             }
             totalEntries += subtitleWeight(sub);
+            if (isClusterEligible(sub)) {
+                totalClusterableEntries += subtitleWeight(sub);
+            }
             if (isCriticalThreat(sub.soundId())) {
                 if (spotlights == null) {
                     spotlights = new ArrayList<>(4);
@@ -1046,7 +1069,7 @@ public final class BattlefieldClusterLOD {
             return ProcessedBattlefield.EMPTY;
         }
         List<SpotlightZone> spotlightList = spotlights == null ? List.of() : Collections.unmodifiableList(spotlights);
-        if (totalEntries < threshold && spotlightList.isEmpty()) {
+        if (totalClusterableEntries < threshold && spotlightList.isEmpty()) {
             List<SoundEntry> unclustered = new ArrayList<>(totalEntries);
             for (int i = 0; i < size; i++) {
                 SubtitlePool.Subtitle sub = subtitles.get(i);
@@ -1061,20 +1084,37 @@ public final class BattlefieldClusterLOD {
         }
 
         Map<ClusterBucketKey, List<SoundEntry>> gridBuckets = new LinkedHashMap<>(Math.min(size, 64));
+        List<SoundEntry> excludedSolo = null;
         for (int i = 0; i < size; i++) {
             SubtitlePool.Subtitle sub = subtitles.get(i);
             if (sub == null) continue;
             SoundEntry base = SoundEntry.fromSubtitle(sub);
+            int weight = subtitleWeight(sub);
+            if (!isClusterEligible(sub)) {
+                if (excludedSolo == null) {
+                    excludedSolo = new ArrayList<>(4);
+                }
+                for (int r = 0; r < weight; r++) {
+                    excludedSolo.add(base);
+                }
+                continue;
+            }
             String groupKey = resolveSubtitleClusterKey(sub, keyExtractor);
             ClusterBucketKey key = new ClusterBucketKey(
                     gridCoord(base.x()), gridCoord(base.y()), gridCoord(base.z()), groupKey);
             List<SoundEntry> bucket = gridBuckets.computeIfAbsent(key, k -> new ArrayList<>(4));
-            int weight = subtitleWeight(sub);
             for (int r = 0; r < weight; r++) {
                 bucket.add(base);
             }
         }
-        return finalizeBuckets(gridBuckets, threshold, spotlightList);
+        ProcessedBattlefield finalized = finalizeBuckets(gridBuckets, threshold, spotlightList);
+        if (excludedSolo == null || excludedSolo.isEmpty()) {
+            return finalized;
+        }
+        List<SoundEntry> combinedUnclustered = new ArrayList<>(finalized.unclustered().size() + excludedSolo.size());
+        combinedUnclustered.addAll(finalized.unclustered());
+        combinedUnclustered.addAll(excludedSolo);
+        return new ProcessedBattlefield(finalized.clusters(), combinedUnclustered, finalized.spotlights());
     }
 
     /**

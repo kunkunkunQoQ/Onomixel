@@ -35,6 +35,9 @@ public final class OnomixelConfig {
             .translation("onomixel.config.spatialWords").define("spatialWords", CaptionSettings.defaults().spatialWords());
     public static final ModConfigSpec.BooleanValue THREAT_RADAR = BUILDER
             .translation("onomixel.config.threatRadar").define("threatRadar", CaptionSettings.defaults().threatRadar());
+    public static final ModConfigSpec.DoubleValue RADAR_MERGE_RANGE = BUILDER
+            .translation("onomixel.config.radarMergeRange")
+            .defineInRange("radarMergeRange", CaptionSettings.defaults().radarMergeRange(), 0.0, 24.0);
     /**
      * @deprecated Per DEC-07, prefix altitude badges have been superseded by 3D world projection
      *             and 2D radar altitude arrows. Preserved solely for backward compatibility.
@@ -93,6 +96,7 @@ public final class OnomixelConfig {
         double ambient = AMBIENT_DURATION_SCALE.get();
         boolean spatialWords = SPATIAL_WORDS.get();
         boolean threatRadar = THREAT_RADAR.get();
+        double radarMergeRange = RADAR_MERGE_RANGE.get();
         boolean altBadges = ALTITUDE_BADGES.get();
         boolean kinetic = KINETIC_TYPOGRAPHY.get();
         boolean speedOfSound = SPEED_OF_SOUND.get();
@@ -113,6 +117,7 @@ public final class OnomixelConfig {
                 && prev.fade() == fade
                 && prev.spatialWords() == spatialWords
                 && prev.threatRadar() == threatRadar
+                && Double.compare(prev.radarMergeRange(), radarMergeRange) == 0
                 && prev.altitudeBadges() == altBadges
                 && prev.kineticTypography() == kinetic
                 && prev.speedOfSound() == speedOfSound
@@ -131,7 +136,8 @@ public final class OnomixelConfig {
         CaptionSettings next = new CaptionSettings(enabled, mode, style, maxDist, maxVis, durNanos,
                 scale, opacity, distScale, fade,
                 new CaptionSettings.Durations(step, pickup, interaction, brk, impact, voice, ambient),
-                spatialWords, threatRadar, altBadges, kinetic, speedOfSound, aesthetic, colorblind);
+                spatialWords, threatRadar, altBadges, kinetic, speedOfSound, aesthetic, colorblind,
+                radarMergeRange);
         cachedSnapshot = next;
         return next;
     }
@@ -148,6 +154,13 @@ public final class OnomixelConfig {
             return THREAT_RADAR.get();
         }
         return CaptionSettings.defaults().threatRadar();
+    }
+
+    public static double radarMergeRange() {
+        if (SPEC != null && SPEC.isLoaded()) {
+            return RADAR_MERGE_RANGE.get();
+        }
+        return CaptionSettings.defaults().radarMergeRange();
     }
 
     public static ColorStyle colorStyle() {

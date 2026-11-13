@@ -13,10 +13,31 @@ public record CaptionSettings(boolean enabled, DisplayMode mode, ColorStyle styl
                               boolean distanceScaling, boolean fade, Durations durations,
                               boolean spatialWords, boolean threatRadar, @Deprecated boolean altitudeBadges,
                               boolean kineticTypography, boolean speedOfSound,
-                              AestheticStyle aestheticStyle, ColorblindMode colorblindMode) {
+                              AestheticStyle aestheticStyle, ColorblindMode colorblindMode,
+                              double radarMergeRange) {
+
+    public static final double DEFAULT_RADAR_MERGE_RANGE = 6.0;
+
+    public CaptionSettings {
+        radarMergeRange = Double.isFinite(radarMergeRange) ? Math.clamp(radarMergeRange, 0.0, 24.0) : DEFAULT_RADAR_MERGE_RANGE;
+    }
 
     /**
-     * 17-parameter backward-compatible constructor (defaults spatialWords = true).
+     * 18-parameter backward-compatible constructor (defaults radarMergeRange = 6.0).
+     */
+    public CaptionSettings(boolean enabled, DisplayMode mode, ColorStyle style, int maxDistance,
+                           int maxVisible, long durationNanos, double textScale, double opacity,
+                           boolean distanceScaling, boolean fade, Durations durations,
+                           boolean spatialWords, boolean threatRadar, @Deprecated boolean altitudeBadges,
+                           boolean kineticTypography, boolean speedOfSound,
+                           AestheticStyle aestheticStyle, ColorblindMode colorblindMode) {
+        this(enabled, mode, style, maxDistance, maxVisible, durationNanos, textScale, opacity,
+                distanceScaling, fade, durations, spatialWords, threatRadar, altitudeBadges,
+                kineticTypography, speedOfSound, aestheticStyle, colorblindMode, DEFAULT_RADAR_MERGE_RANGE);
+    }
+
+    /**
+     * 17-parameter backward-compatible constructor (defaults spatialWords = true, radarMergeRange = 6.0).
      */
     public CaptionSettings(boolean enabled, DisplayMode mode, ColorStyle style, int maxDistance,
                            int maxVisible, long durationNanos, double textScale, double opacity,
@@ -25,7 +46,7 @@ public record CaptionSettings(boolean enabled, DisplayMode mode, ColorStyle styl
                            boolean speedOfSound, AestheticStyle aestheticStyle, ColorblindMode colorblindMode) {
         this(enabled, mode, style, maxDistance, maxVisible, durationNanos, textScale, opacity,
                 distanceScaling, fade, durations, true, threatRadar, altitudeBadges, kineticTypography,
-                speedOfSound, aestheticStyle, colorblindMode);
+                speedOfSound, aestheticStyle, colorblindMode, DEFAULT_RADAR_MERGE_RANGE);
     }
 
     /**

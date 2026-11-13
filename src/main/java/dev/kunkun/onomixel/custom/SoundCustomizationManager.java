@@ -38,6 +38,8 @@ public final class SoundCustomizationManager {
     private static final AtomicReference<CompiledWordOverrideIndex> ACTIVE_INDEX =
             new AtomicReference<>(CompiledWordOverrideIndex.EMPTY);
 
+    private static final List<Runnable> RELOAD_LISTENERS = new CopyOnWriteArrayList<>();
+
     private SoundCustomizationManager() {}
 
     /**
@@ -145,12 +147,7 @@ public final class SoundCustomizationManager {
                 String localJson = Files.readString(localConfigFile);
                 List<CustomWordRule> parsed = CustomWordParser.parse(localJson);
                 for (CustomWordRule r : parsed) {
-                    newUserRules.add(new CustomWordRule(
-                            r.exactId(), r.pattern(), r.patternString(), r.display(),
-                            r.visualTypeId(), r.kineticMotion(), r.vibrantColor(), r.pastelColor(),
-                            r.bold(), r.italic(), r.scaleMultiplier(), r.durationMultiplier(),
-                            r.heightOffset(), r.priority() + 1000
-                    ));
+                    newUserRules.add(r.withPriority(r.priority() + 1000));
                 }
             } catch (IOException e) {
                 LOGGER.log(System.Logger.Level.WARNING, "Failed to read local onomatopoeia config from " + localConfigFile + ": " + e.getMessage());
@@ -196,6 +193,37 @@ public final class SoundCustomizationManager {
 
         LOGGER.log(System.Logger.Level.INFO, "Onomixel: Recompiled {0} custom onomatopoeia rules (Tier1 API: {1}, Tier2 Pack: {2}, Tier3 User: {3}).",
                 compiled.size(), TIER1_API_RULES.size(), TIER2_PACK_RULES.size(), TIER3_USER_RULES.size());
+        notifyReloadListeners();
+    }
+
+    private static void notifyReloadListeners() {
+        for (Runnable listener : RELOAD_LISTENERS) {
+            try {
+                listener.run();
+            } catch (Throwable ignored) {
+                // Safeguard reload path against buggy third-party listeners.
+            }
+        }
+    }
+
+    public static void addReloadListener(Runnable listener) {
+        if (listener != null) {
+            RELOAD_LISTENERS.add(listener);
+        }
+    }
+
+    public static void removeReloadListener(Runnable listener) {
+        if (listener != null) {
+            RELOAD_LISTENERS.remove(listener);
+        }
+    }
+
+    public static boolean hasRadarOverrides() {
+        return ACTIVE_INDEX.get().hasRadarRules();
+    }
+
+    public static boolean hasClusterOverrides() {
+        return ACTIVE_INDEX.get().hasClusterRules();
     }
 
     /**

@@ -46,6 +46,7 @@ public final class OnomixelConfigScreen extends Screen {
     private int draftDistance;
     private double draftOpacity;
     private double draftDuration;
+    private double draftRadarMergeRange;
 
     // Zero-allocation cached preview text holders
     private String cachedRadarText;
@@ -80,26 +81,42 @@ public final class OnomixelConfigScreen extends Screen {
         this.draftDistance = OnomixelConfig.MAX_DISTANCE.get();
         this.draftOpacity = OnomixelConfig.OPACITY.get();
         this.draftDuration = OnomixelConfig.DURATION_SECONDS.get();
+        this.draftRadarMergeRange = OnomixelConfig.RADAR_MERGE_RANGE.get();
     }
 
     private int getStartY() {
-        return height < 290 ? 24 : 32;
+        if (height < 265) return 20;
+        return height < 310 ? 24 : 34;
     }
 
     private int getRowGap() {
-        return height < 290 ? 21 : 23;
+        return height < 265 ? 22 : 24;
+    }
+
+    private int getButtonHeight() {
+        return height < 265 ? 19 : 20;
+    }
+
+    private int getGridColsGap() {
+        return width >= 470 ? 8 : 5;
+    }
+
+    private int getColWidth() {
+        int colGap = getGridColsGap();
+        return Math.clamp((width - 20 - colGap * 2) / 3, 120, 156);
+    }
+
+    private int getTotalGridWidth() {
+        return getColWidth() * 3 + getGridColsGap() * 2;
     }
 
     private int getBoxY() {
-        return getStartY() + getRowGap() * 6 + 2;
+        return getStartY() + getRowGap() * 4 + getButtonHeight() + (height < 265 ? 6 : 8);
     }
 
     private int getBoxH() {
-        return height < 290 ? 36 : 40;
-    }
-
-    private int getActionRowY() {
-        return getBoxY() + getBoxH() + (height < 290 ? 3 : 5);
+        if (height < 265) return 44;
+        return height < 310 ? 52 : 66;
     }
 
     @Override
@@ -120,19 +137,25 @@ public final class OnomixelConfigScreen extends Screen {
         cachedSampleWordW = -1;
         cachedSampleAesthetic = null;
 
-        int leftCol = width / 2 - 155;
-        int rightCol = width / 2 + 5;
+        int colW = getColWidth();
+        int colGap = getGridColsGap();
+        int totalW = getTotalGridWidth();
+        int gridLeft = (width - totalW) / 2;
+        int col0 = gridLeft;
+        int col1 = gridLeft + colW + colGap;
+        int col2 = gridLeft + (colW + colGap) * 2;
         int startY = getStartY();
         int rowGap = getRowGap();
+        int btnH = getButtonHeight();
 
-        // Left Column: Core Modes & Art Styles (6 rows)
+        // Column 0: Core Switches & Acoustic Features (5 rows)
         addRenderableWidget(Button.builder(
                 getMasterButtonText(),
                 btn -> {
                     draftEnabled = !draftEnabled;
                     btn.setMessage(getMasterButtonText());
                 }
-        ).bounds(leftCol, startY, 150, 20).build());
+        ).bounds(col0, startY, colW, btnH).build());
 
         addRenderableWidget(Button.builder(
                 getModeButtonText(),
@@ -140,70 +163,11 @@ public final class OnomixelConfigScreen extends Screen {
                     draftMode = cycleMode(draftMode);
                     btn.setMessage(getModeButtonText());
                 }
-        ).bounds(leftCol, startY + rowGap, 150, 20).build());
+        ).bounds(col0, startY + rowGap, colW, btnH).build());
 
-        addRenderableWidget(Button.builder(
-                getAestheticButtonText(),
-                btn -> {
-                    draftAesthetic = cycleAesthetic(draftAesthetic);
-                    cachedSampleWord = null;
-                    btn.setMessage(getAestheticButtonText());
-                }
-        ).bounds(leftCol, startY + rowGap * 2, 150, 20).build());
-
-        addRenderableWidget(Button.builder(
-                getColorStyleButtonText(),
-                btn -> {
-                    draftColorStyle = draftColorStyle == ColorStyle.VIBRANT ? ColorStyle.PASTEL : ColorStyle.VIBRANT;
-                    btn.setMessage(getColorStyleButtonText());
-                }
-        ).bounds(leftCol, startY + rowGap * 3, 150, 20).build());
-
-        addRenderableWidget(Button.builder(
-                getColorblindButtonText(),
-                btn -> {
-                    draftColorblind = cycleColorblind(draftColorblind);
-                    btn.setMessage(getColorblindButtonText());
-                }
-        ).bounds(leftCol, startY + rowGap * 4, 150, 20).build());
-
-        addRenderableWidget(Button.builder(
-                getSpeedOfSoundButtonText(),
-                btn -> {
-                    draftSpeedOfSound = !draftSpeedOfSound;
-                    btn.setMessage(getSpeedOfSoundButtonText());
-                }
-        ).bounds(leftCol, startY + rowGap * 5, 150, 20).build());
-
-        // Right Column: Draggable Sliders & Tactical Toggles (6 rows)
-        addRenderableWidget(new DraggableSlider(
-                rightCol, startY, 150, 20,
-                Component.translatable("onomixel.config.screen.text_scale"),
-                draftScale, 0.50, 2.00, 0.05, "%.2fx",
-                val -> draftScale = Math.round(val * 100.0) / 100.0
-        ));
-
-        addRenderableWidget(new DraggableSlider(
-                rightCol, startY + rowGap, 150, 20,
-                Component.translatable("onomixel.config.screen.max_distance"),
-                draftDistance, 8.0, 48.0, 1.0, "%.0fm",
-                val -> draftDistance = (int) Math.round(val)
-        ));
-
-        addRenderableWidget(new DraggableSlider(
-                rightCol, startY + rowGap * 2, 150, 20,
-                Component.translatable("onomixel.config.screen.opacity"),
-                draftOpacity * 100.0, 20.0, 100.0, 5.0, "%.0f%%",
-                val -> draftOpacity = Math.round(val) / 100.0
-        ));
-
-        addRenderableWidget(new DraggableSlider(
-                rightCol, startY + rowGap * 3, 150, 20,
-                Component.translatable("onomixel.config.screen.duration"),
-                draftDuration, 0.5, 3.0, 0.1, "%.1fs",
-                val -> draftDuration = Math.round(val * 10.0) / 10.0
-        ));
-
+        int halfGap = 4;
+        int leftHalfW = (colW - halfGap) / 2;
+        int rightHalfW = colW - halfGap - leftHalfW;
         addRenderableWidget(Button.builder(
                 getSpatialWordsButtonText(),
                 btn -> {
@@ -211,7 +175,7 @@ public final class OnomixelConfigScreen extends Screen {
                     btn.setMessage(getSpatialWordsButtonText());
                 }
         ).tooltip(Tooltip.create(Component.translatable("onomixel.config.spatialWords.tooltip")))
-        .bounds(rightCol, startY + rowGap * 4, 73, 20).build());
+        .bounds(col0, startY + rowGap * 2, leftHalfW, btnH).build());
 
         addRenderableWidget(Button.builder(
                 getRadarButtonText(),
@@ -220,7 +184,7 @@ public final class OnomixelConfigScreen extends Screen {
                     btn.setMessage(getRadarButtonText());
                 }
         ).tooltip(Tooltip.create(Component.translatable("onomixel.config.threatRadar.tooltip")))
-        .bounds(rightCol + 77, startY + rowGap * 4, 73, 20).build());
+        .bounds(col0 + leftHalfW + halfGap, startY + rowGap * 2, rightHalfW, btnH).build());
 
         addRenderableWidget(Button.builder(
                 getKineticButtonText(),
@@ -228,10 +192,42 @@ public final class OnomixelConfigScreen extends Screen {
                     draftKinetic = !draftKinetic;
                     btn.setMessage(getKineticButtonText());
                 }
-        ).bounds(rightCol, startY + rowGap * 5, 150, 20).build());
+        ).bounds(col0, startY + rowGap * 3, colW, btnH).build());
 
-        // Custom Words Action Row: Reload (left) and Open Folder (right)
-        int actionRowY = getActionRowY();
+        addRenderableWidget(Button.builder(
+                getSpeedOfSoundButtonText(),
+                btn -> {
+                    draftSpeedOfSound = !draftSpeedOfSound;
+                    btn.setMessage(getSpeedOfSoundButtonText());
+                }
+        ).tooltip(Tooltip.create(Component.translatable("onomixel.config.speedOfSound.tooltip")))
+        .bounds(col0, startY + rowGap * 4, colW, btnH).build());
+
+        // Column 1: Visual Aesthetics & Custom Words Pack Actions (5 rows)
+        addRenderableWidget(Button.builder(
+                getAestheticButtonText(),
+                btn -> {
+                    draftAesthetic = cycleAesthetic(draftAesthetic);
+                    cachedSampleWord = null;
+                    btn.setMessage(getAestheticButtonText());
+                }
+        ).bounds(col1, startY, colW, btnH).build());
+
+        addRenderableWidget(Button.builder(
+                getColorStyleButtonText(),
+                btn -> {
+                    draftColorStyle = draftColorStyle == ColorStyle.VIBRANT ? ColorStyle.PASTEL : ColorStyle.VIBRANT;
+                    btn.setMessage(getColorStyleButtonText());
+                }
+        ).bounds(col1, startY + rowGap, colW, btnH).build());
+
+        addRenderableWidget(Button.builder(
+                getColorblindButtonText(),
+                btn -> {
+                    draftColorblind = cycleColorblind(draftColorblind);
+                    btn.setMessage(getColorblindButtonText());
+                }
+        ).bounds(col1, startY + rowGap * 2, colW, btnH).build());
 
         addRenderableWidget(Button.builder(
                 Component.translatable("onomixel.config.screen.reload_custom_words"),
@@ -240,24 +236,64 @@ public final class OnomixelConfigScreen extends Screen {
                     cachedSampleWord = null;
                     cachedActiveRulesCount = -1;
                 }
-        ).bounds(leftCol, actionRowY, 150, 20).build());
+        ).bounds(col1, startY + rowGap * 3, colW, btnH).build());
 
         addRenderableWidget(Button.builder(
                 Component.translatable("onomixel.config.screen.open_custom_folder"),
                 btn -> SoundOverrideLoader.openConfigFolder()
-        ).bounds(rightCol, actionRowY, 150, 20).build());
+        ).bounds(col1, startY + rowGap * 4, colW, btnH).build());
+
+        // Column 2: Draggable Sliders (5 rows)
+        addRenderableWidget(new DraggableSlider(
+                col2, startY, colW, btnH,
+                Component.translatable("onomixel.config.screen.text_scale"),
+                draftScale, 0.50, 2.00, 0.05, "%.2fx",
+                val -> draftScale = Math.round(val * 100.0) / 100.0
+        ));
+
+        addRenderableWidget(new DraggableSlider(
+                col2, startY + rowGap, colW, btnH,
+                Component.translatable("onomixel.config.screen.max_distance"),
+                draftDistance, 8.0, 48.0, 1.0, "%.0fm",
+                val -> draftDistance = (int) Math.round(val)
+        ));
+
+        addRenderableWidget(new DraggableSlider(
+                col2, startY + rowGap * 2, colW, btnH,
+                Component.translatable("onomixel.config.screen.opacity"),
+                draftOpacity * 100.0, 20.0, 100.0, 5.0, "%.0f%%",
+                val -> draftOpacity = Math.round(val) / 100.0
+        ));
+
+        addRenderableWidget(new DraggableSlider(
+                col2, startY + rowGap * 3, colW, btnH,
+                Component.translatable("onomixel.config.screen.duration"),
+                draftDuration, 0.5, 3.0, 0.1, "%.1fs",
+                val -> draftDuration = Math.round(val * 10.0) / 10.0
+        ));
+
+        DraggableSlider mergeSlider = new DraggableSlider(
+                col2, startY + rowGap * 4, colW, btnH,
+                Component.translatable("onomixel.config.screen.radar_merge_range"),
+                draftRadarMergeRange, 0.0, 24.0, 0.5, "%.1fm",
+                Component.translatable("onomixel.config.screen.merge_off"),
+                val -> draftRadarMergeRange = Math.round(val * 2.0) / 2.0
+        );
+        mergeSlider.setTooltip(Tooltip.create(Component.translatable("onomixel.config.radarMergeRange.tooltip")));
+        addRenderableWidget(mergeSlider);
 
         // Bottom Action Bar
-        int bottomY = height - 26;
+        int bottomY = height - (height < 265 ? 24 : 28);
+        int actionW = (totalW - colGap) / 2;
         addRenderableWidget(Button.builder(
                 Component.translatable("onomixel.config.screen.save"),
                 btn -> saveAndClose()
-        ).bounds(leftCol, bottomY, 150, 20).build());
+        ).bounds(gridLeft, bottomY, actionW, 20).build());
 
         addRenderableWidget(Button.builder(
                 Component.translatable("onomixel.config.screen.cancel"),
                 btn -> onClose()
-        ).bounds(rightCol, bottomY, 150, 20).build());
+        ).bounds(gridLeft + actionW + colGap, bottomY, totalW - actionW - colGap, 20).build());
     }
 
     private Component getMasterButtonText() {
@@ -328,6 +364,7 @@ public final class OnomixelConfigScreen extends Screen {
         OnomixelConfig.MAX_DISTANCE.set(draftDistance);
         OnomixelConfig.OPACITY.set(draftOpacity);
         OnomixelConfig.DURATION_SECONDS.set(draftDuration);
+        OnomixelConfig.RADAR_MERGE_RANGE.set(draftRadarMergeRange);
         if (OnomixelConfig.SPEC.isLoaded()) {
             OnomixelConfig.SPEC.save();
         }
@@ -357,10 +394,10 @@ public final class OnomixelConfigScreen extends Screen {
         }
         graphics.text(font, cachedTitle, width / 2 - cachedTitleW / 2, height < 290 ? 8 : 12, 0xFFFFFFFF, true);
 
-        // Live Dynamic Preview Sandbox Box in the lower section (aligned with double-column 310px width)
-        int boxW = 310;
+        // Live Dynamic Preview Sandbox Box matching full 3-column grid width
+        int boxW = getTotalGridWidth();
         int boxH = getBoxH();
-        int boxX = width / 2 - 155;
+        int boxX = (width - boxW) / 2;
         int boxY = getBoxY();
 
         graphics.fill(boxX, boxY, boxX + boxW, boxY + boxH, 0xAA090D16);
@@ -583,10 +620,18 @@ public final class OnomixelConfigScreen extends Screen {
         private final double step;
         private final Component labelPrefix;
         private final String unitFormat;
+        private final Component zeroOverride;
         private final java.util.function.DoubleConsumer onValueChange;
 
         public DraggableSlider(int x, int y, int width, int height, Component labelPrefix,
                                double current, double min, double max, double step, String unitFormat,
+                               java.util.function.DoubleConsumer onValueChange) {
+            this(x, y, width, height, labelPrefix, current, min, max, step, unitFormat, null, onValueChange);
+        }
+
+        public DraggableSlider(int x, int y, int width, int height, Component labelPrefix,
+                               double current, double min, double max, double step, String unitFormat,
+                               Component zeroOverride,
                                java.util.function.DoubleConsumer onValueChange) {
             super(x, y, width, height, Component.empty(), (Math.clamp(current, min, max) - min) / (max - min));
             this.min = min;
@@ -594,6 +639,7 @@ public final class OnomixelConfigScreen extends Screen {
             this.step = step > 0 ? step : 1.0;
             this.labelPrefix = labelPrefix;
             this.unitFormat = unitFormat;
+            this.zeroOverride = zeroOverride;
             this.onValueChange = onValueChange;
             this.updateMessage();
         }
@@ -606,6 +652,10 @@ public final class OnomixelConfigScreen extends Screen {
         @Override
         protected void updateMessage() {
             double actual = snappedValue();
+            if (zeroOverride != null && actual <= 1e-6) {
+                setMessage(Component.empty().append(labelPrefix).append(": ").append(zeroOverride));
+                return;
+            }
             String valStr = String.format(Locale.ROOT, unitFormat, actual);
             setMessage(Component.empty().append(labelPrefix).append(": ").append(valStr));
         }

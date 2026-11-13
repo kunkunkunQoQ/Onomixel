@@ -148,6 +148,9 @@ public final class BattlefieldClusterTracker {
                     continue;
                 }
                 eligibleById.put(sub.id(), sub);
+                if (!BattlefieldClusterLOD.isClusterEligible(sub)) {
+                    continue;
+                }
                 String gk = BattlefieldClusterLOD.resolveSubtitleClusterKey(sub, keyExtractor);
                 TrackedCluster match = findNearestActiveCluster(gk, sub.x(), sub.y(), sub.z());
                 if (match != null) {

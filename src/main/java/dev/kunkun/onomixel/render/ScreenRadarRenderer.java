@@ -3,6 +3,7 @@ package dev.kunkun.onomixel.render;
 import dev.kunkun.onomixel.sound.ClientSoundCapture;
 import dev.kunkun.onomixel.subtitle.SubtitlePool;
 import dev.kunkun.onomixel.subtitle.ThreatRadarCalculator;
+import dev.kunkun.onomixel.subtitle.ThreatRadarMerger;
 import dev.kunkun.onomixel.subtitle.ThreatRegistry;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
@@ -33,30 +34,11 @@ public final class ScreenRadarRenderer {
     private final ClientSoundCapture capture;
 
     // Zero-allocation pre-allocated scratch pools for 60-144 FPS rendering
-    private static final int MAX_CANDIDATES = 16;
+    private static final int MAX_CANDIDATES = 32;
     private static final int MAX_DISPLAYED = 4;
 
-    private static final class CandidateSlot {
-        String soundId;
-        double soundX, soundY, soundZ;
-        boolean isCritical;
-        double distance;
-        double maxDistance;
-
-        void set(String soundId, double soundX, double soundY, double soundZ,
-                 boolean isCritical, double distance, double maxDistance) {
-            this.soundId = soundId;
-            this.soundX = soundX;
-            this.soundY = soundY;
-            this.soundZ = soundZ;
-            this.isCritical = isCritical;
-            this.distance = distance;
-            this.maxDistance = maxDistance;
-        }
-    }
-
-    private final CandidateSlot[] candidatePool = new CandidateSlot[MAX_CANDIDATES];
-    private final CandidateSlot[] selectedCandidates = new CandidateSlot[MAX_DISPLAYED];
+    private final ThreatRadarMerger.Candidate[] candidatePool = new ThreatRadarMerger.Candidate[MAX_CANDIDATES];
+    private final ThreatRadarMerger.Candidate[] selectedCandidates = new ThreatRadarMerger.Candidate[MAX_DISPLAYED];
     private final String[] displayTexts = new String[MAX_DISPLAYED];
     private final int[] textWidths = new int[MAX_DISPLAYED];
     private final int[] halfWidths = new int[MAX_DISPLAYED];
@@ -75,10 +57,10 @@ public final class ScreenRadarRenderer {
     public ScreenRadarRenderer(ClientSoundCapture capture) {
         this.capture = capture;
         for (int i = 0; i < MAX_CANDIDATES; i++) {
-            this.candidatePool[i] = new CandidateSlot();
+            this.candidatePool[i] = new ThreatRadarMerger.Candidate();
         }
         for (int i = 0; i < MAX_DISPLAYED; i++) {
-            this.selectedCandidates[i] = new CandidateSlot();
+            this.selectedCandidates[i] = new ThreatRadarMerger.Candidate();
         }
     }
 
@@ -87,26 +69,6 @@ public final class ScreenRadarRenderer {
         int whole = tenths / 10;
         int frac = Math.abs(tenths % 10);
         return whole + "." + frac + "m";
-    }
-
-    private static int compareCandidates(CandidateSlot a, CandidateSlot b) {
-        if (a.isCritical != b.isCritical) {
-            return a.isCritical ? -1 : 1; // Critical threats first
-        }
-        return Double.compare(a.distance, b.distance); // Closer threats first
-    }
-
-    private static void sortCandidates(CandidateSlot[] pool, int count) {
-        // Fast in-place insertion sort (count <= 16): zero lambda, comparator, or iterator allocation
-        for (int i = 1; i < count; i++) {
-            CandidateSlot key = pool[i];
-            int j = i - 1;
-            while (j >= 0 && compareCandidates(pool[j], key) > 0) {
-                pool[j + 1] = pool[j];
-                j--;
-            }
-            pool[j + 1] = key;
-        }
     }
 
     @SubscribeEvent
@@ -180,17 +142,18 @@ public final class ScreenRadarRenderer {
 
             if (candidateCount < MAX_CANDIDATES) {
                 candidatePool[candidateCount++].set(soundId, eventItem.x(), eventItem.y(), eventItem.z(),
-                        isCritical, dist, maxDist);
+                        level, dist, maxDist, eventItem.triggeredNanos());
             }
         }
 
         if (candidateCount == 0) return;
 
-        // Prioritize in-place: critical first, then closest distance
-        sortCandidates(candidatePool, candidateCount);
+        // Nearby / same-direction clustering & escalation-override deduplication, then priority sort
+        int mergedCount = ThreatRadarMerger.mergeAndSort(
+                candidatePool, candidateCount, camPos.x, camPos.y, camPos.z, settings.radarMergeRange());
 
         // Select up to MAX_DISPLAYED highest-priority off-screen candidates
-        int count = Math.min(MAX_DISPLAYED, candidateCount);
+        int count = Math.min(MAX_DISPLAYED, mergedCount);
         reusableLayoutInputs.clear();
         var currentLanguage = net.minecraft.locale.Language.getInstance();
         if (currentLanguage != cachedLanguage) {
@@ -199,10 +162,10 @@ public final class ScreenRadarRenderer {
         }
 
         for (int i = 0; i < count; i++) {
-            CandidateSlot candidate = candidatePool[i];
-            CandidateSlot targetSlot = selectedCandidates[i];
+            ThreatRadarMerger.Candidate candidate = candidatePool[i];
+            ThreatRadarMerger.Candidate targetSlot = selectedCandidates[i];
             targetSlot.set(candidate.soundId, candidate.soundX, candidate.soundY, candidate.soundZ,
-                    candidate.isCritical, candidate.distance, candidate.maxDistance);
+                    candidate.level, candidate.distance, candidate.maxDistance, candidate.triggeredNanos);
 
             int tenths = (int) Math.round(candidate.distance * 10.0);
             String displayText;
@@ -256,7 +219,7 @@ public final class ScreenRadarRenderer {
 
         for (int i = 0; i < plannedBadges.size(); i++) {
             ScreenRadarLayout.PlannedBadge planned = plannedBadges.get(i);
-            CandidateSlot candidate = selectedCandidates[i];
+            ThreatRadarMerger.Candidate candidate = selectedCandidates[i];
             String displayText = displayTexts[i];
             int textWidth = textWidths[i];
             int halfWidth = halfWidths[i];

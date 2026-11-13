@@ -1,6 +1,7 @@
 package dev.kunkun.onomixel.sound;
 
 import dev.kunkun.onomixel.OnomixelConfig;
+import dev.kunkun.onomixel.api.OnomixelAPI;
 import dev.kunkun.onomixel.subtitle.BossChoreographyDirector;
 import dev.kunkun.onomixel.subtitle.CaptionSettings;
 import dev.kunkun.onomixel.subtitle.CaptionVisuals;
@@ -179,6 +180,7 @@ public final class ClientSoundCapture {
     public long pump(Minecraft minecraft) {
         CaptionSettings next = OnomixelConfig.snapshot();
         if (next != settings) {
+            OnomixelAPI.syncLiveSettings(next);
             if (next.mode() != settings.mode()) {
                 subtitles.filterAllowed(next.mode());
                 delayedEmissions.removeIf(pending -> !pending.definition().semantics().allowed(next.mode()));
@@ -230,6 +232,18 @@ public final class ClientSoundCapture {
                             pending.anchorX(), pending.anchorY(), pending.anchorZ(), now, pending.duration(),
                             pending.importance(), pending.definition().semantics(), pending.definition().mergeGroup(),
                             pending.localPlayerShot());
+                    if (!pending.localPlayerShot() && settings.threatRadar() && OnomixelAPI.hasRadarListeners()) {
+                        String pId = pending.definition().soundId();
+                        ThreatRegistry.ThreatLevel tLevel = ThreatRegistry.evaluate(pId);
+                        if (tLevel != ThreatRegistry.ThreatLevel.NONE) {
+                            var cPos = minecraft.gameRenderer.mainCamera().position();
+                            double dx = pending.sourceX() - cPos.x;
+                            double dy = pending.sourceY() - cPos.y;
+                            double dz = pending.sourceZ() - cPos.z;
+                            OnomixelAPI.notifyRadarThreat(pId, tLevel, pending.sourceX(), pending.sourceY(),
+                                    pending.sourceZ(), Math.sqrt(dx * dx + dy * dy + dz * dz));
+                        }
+                    }
                 });
         for (int i = 0; i < PlaybackMailbox.CONFIRMATION_LIMIT; i++) {
             // Bound new event creation; the renderer separately budgets dynamic world-ray searches.
@@ -300,6 +314,13 @@ public final class ClientSoundCapture {
             subtitles.addAt(soundId, effectiveKey, world, request.category.name(),
                     request.x, request.y, request.z, anchor.x(), anchor.y(), anchor.z(), now, duration,
                     definition.importance(), definition.semantics(), definition.mergeGroup(), request.localPlayerShot());
+
+            if (!request.localPlayerShot() && settings.threatRadar() && OnomixelAPI.hasRadarListeners()) {
+                ThreatRegistry.ThreatLevel tLevel = ThreatRegistry.evaluate(soundId);
+                if (tLevel != ThreatRegistry.ThreatLevel.NONE) {
+                    OnomixelAPI.notifyRadarThreat(soundId, tLevel, request.x, request.y, request.z, camDist);
+                }
+            }
 
             if (BossChoreographyDirector.isBossSound(soundId)) {
                 BossChoreographyDirector.getInstance().onSoundEvent(soundId, request.x, request.y, request.z, now);

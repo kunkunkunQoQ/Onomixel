@@ -18,17 +18,23 @@ public final class CompiledWordOverrideIndex {
     private final Map<String, CustomWordRule> exactMatches;
     private final List<CustomWordRule> patternMatches;
     private final BoundedLookupCache<String, CustomWordRule> patternCache;
+    private final boolean hasRadarRules;
+    private final boolean hasClusterRules;
 
     public CompiledWordOverrideIndex(List<CustomWordRule> rules) {
         if (rules == null || rules.isEmpty()) {
             this.exactMatches = Map.of();
             this.patternMatches = List.of();
             this.patternCache = null;
+            this.hasRadarRules = false;
+            this.hasClusterRules = false;
             return;
         }
 
         Map<String, CustomWordRule> exacts = new HashMap<>();
         List<CustomWordRule> patterns = new ArrayList<>();
+        boolean radarAny = false;
+        boolean clusterAny = false;
 
         // Sort rules so that higher priority rules process first
         List<CustomWordRule> sorted = new ArrayList<>(rules.size());
@@ -38,6 +44,12 @@ public final class CompiledWordOverrideIndex {
         Collections.sort(sorted);
 
         for (CustomWordRule rule : sorted) {
+            if (rule.hasRadarOverride()) {
+                radarAny = true;
+            }
+            if (rule.hasClusterOverride()) {
+                clusterAny = true;
+            }
             if (rule.isExact()) {
                 // First rule for an exact soundId wins because sorted by priority desc
                 exacts.putIfAbsent(rule.exactId(), rule);
@@ -51,6 +63,16 @@ public final class CompiledWordOverrideIndex {
         this.patternCache = this.patternMatches.isEmpty()
                 ? null
                 : new BoundedLookupCache<>(PATTERN_CACHE_CAP, PATTERN_CACHE_EVICT_BATCH);
+        this.hasRadarRules = radarAny;
+        this.hasClusterRules = clusterAny;
+    }
+
+    public boolean hasRadarRules() {
+        return hasRadarRules;
+    }
+
+    public boolean hasClusterRules() {
+        return hasClusterRules;
     }
 
     /**

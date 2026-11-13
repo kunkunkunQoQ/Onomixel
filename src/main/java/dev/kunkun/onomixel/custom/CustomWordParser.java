@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import dev.kunkun.onomixel.subtitle.ThreatRegistry;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -117,10 +118,63 @@ public final class CustomWordParser {
 
         Float durationMultiplier = physObj.has("duration_multiplier") ? physObj.get("duration_multiplier").getAsFloat() : null;
         Double heightOffset = physObj.has("height_offset") ? physObj.get("height_offset").getAsDouble() : null;
+        Boolean clusterable = null;
+        if (physObj.has("clusterable") && physObj.get("clusterable").isJsonPrimitive()) {
+            clusterable = Boolean.valueOf(physObj.get("clusterable").getAsBoolean());
+        } else if (obj.has("clusterable") && obj.get("clusterable").isJsonPrimitive()) {
+            clusterable = Boolean.valueOf(obj.get("clusterable").getAsBoolean());
+        }
+        String customClusterGroup = null;
+        if (physObj.has("cluster_group") && physObj.get("cluster_group").isJsonPrimitive()) {
+            customClusterGroup = physObj.get("cluster_group").getAsString().trim();
+        } else if (obj.has("cluster_group") && obj.get("cluster_group").isJsonPrimitive()) {
+            customClusterGroup = obj.get("cluster_group").getAsString().trim();
+        }
+        if (customClusterGroup != null && customClusterGroup.isEmpty()) {
+            customClusterGroup = null;
+        }
+
+        // Parse optional radar threat block
+        ThreatRegistry.ThreatLevel radarLevel = null;
+        Long radarDurationNanos = null;
+        String radarLabel = null;
+        if (obj.has("radar") && obj.get("radar").isJsonObject()) {
+            JsonObject radarObj = obj.getAsJsonObject("radar");
+            if (radarObj.has("level") && radarObj.get("level").isJsonPrimitive()) {
+                try {
+                    radarLevel = ThreatRegistry.ThreatLevel.valueOf(
+                            radarObj.get("level").getAsString().trim().toUpperCase(Locale.ROOT));
+                } catch (IllegalArgumentException ignored) {
+                    radarLevel = null;
+                }
+            }
+            if (radarObj.has("duration_ms") && radarObj.get("duration_ms").isJsonPrimitive()) {
+                long ms = radarObj.get("duration_ms").getAsLong();
+                if (ms > 0L) {
+                    radarDurationNanos = Math.multiplyExact(Math.min(ms, 60_000L), 1_000_000L);
+                }
+            } else if (radarObj.has("duration_seconds") && radarObj.get("duration_seconds").isJsonPrimitive()) {
+                double secs = radarObj.get("duration_seconds").getAsDouble();
+                if (Double.isFinite(secs) && secs > 0.0) {
+                    radarDurationNanos = Math.round(Math.min(secs, 60.0) * 1_000_000_000.0);
+                }
+            }
+            if (radarObj.has("label") && radarObj.get("label").isJsonPrimitive()) {
+                radarLabel = radarObj.get("label").getAsString().trim();
+            } else if (radarObj.has("name_key") && radarObj.get("name_key").isJsonPrimitive()) {
+                radarLabel = radarObj.get("name_key").getAsString().trim();
+            } else if (radarObj.has("key") && radarObj.get("key").isJsonPrimitive()) {
+                radarLabel = radarObj.get("key").getAsString().trim();
+            }
+            if (radarLabel != null && radarLabel.isEmpty()) {
+                radarLabel = null;
+            }
+        }
 
         return new CustomWordRule(
                 exactId, pattern, patternString, display, visualTypeId, kineticMotion,
-                vibrant, pastel, bold, italic, scaleMultiplier, durationMultiplier, heightOffset, priority
+                vibrant, pastel, bold, italic, scaleMultiplier, durationMultiplier, heightOffset,
+                priority, radarLevel, radarDurationNanos, radarLabel, clusterable, customClusterGroup
         );
     }
 

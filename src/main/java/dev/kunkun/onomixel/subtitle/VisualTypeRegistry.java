@@ -279,7 +279,7 @@ public final class VisualTypeRegistry {
 
     private static VisualType computeResolve(String soundId, CustomWordRule customRule) {
         if (customRule != null && customRule.visualTypeId() != null) {
-            VisualType customVt = TYPES.get(customRule.visualTypeId());
+            VisualType customVt = getType(customRule.visualTypeId());
             if (customVt != null) return customVt;
         }
         VisualType explicit = SOUND_MAP.get(soundId);
@@ -319,9 +319,14 @@ public final class VisualTypeRegistry {
     }
 
     /**
-     * Finds a visual type by its ID.
+     * Finds a visual type by its ID (accepting shorthand built-in names without {@code onomixel:}).
      */
     public static VisualType getType(String id) {
-        return TYPES.get(id);
+        if (id == null) return null;
+        VisualType exact = TYPES.get(id);
+        if (exact != null || id.indexOf(':') >= 0) {
+            return exact;
+        }
+        return TYPES.get("onomixel:" + id);
     }
 }
