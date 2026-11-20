@@ -1,0 +1,36 @@
+name: 问题反馈
+description: 报告安装、雷达、空间拟声词或自定义词库的问题。
+body:
+  - type: input
+    id: versions
+    attributes:
+      label: 版本
+      description: 请填写 Minecraft、NeoForge 和 Onomixel 的实际版本。
+      placeholder: Minecraft 26.3 / NeoForge 26.3.0.103 / Onomixel 0.1.0-dev.5
+    validations:
+      required: true
+  - type: dropdown
+    id: feature
+    attributes:
+      label: 受影响的功能
+      multiple: true
+      options:
+        - 安装或启动
+        - 边缘雷达
+        - 空间拟声词
+        - 自定义词库或资源包
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 如何重现？预期和实际分别发生了什么？
+      description: 显示问题请注明开启了哪些显示选项、哪个声音触发了提示，以及当时面朝哪里。若为启动问题，请附相关报错。
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 补充信息（选填）
+      description: 可附截图、相关日志片段、自定义规则或一起使用的 Mod。
