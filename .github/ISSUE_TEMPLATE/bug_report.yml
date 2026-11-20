@@ -6,7 +6,7 @@ body:
     attributes:
       label: 版本
       description: 请填写 Minecraft、NeoForge 和 Onomixel 的实际版本。
-      placeholder: Minecraft 26.3 / NeoForge 26.3.0.103 / Onomixel 0.1.0
+      placeholder: Minecraft 26.3 / NeoForge 26.3.0.103 / Onomixel 0.11
     validations:
       required: true
   - type: dropdown
