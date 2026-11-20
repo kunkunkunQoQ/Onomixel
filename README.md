@@ -12,7 +12,7 @@ Onomixel 把 Minecraft 里的声音变成两种视觉提示：身后苦力怕点
 
 ## 安装与首次启用
 
-1. 按下方的源码构建步骤生成安装包，将 `build/libs/onomixel-0.1.0-dev.5.jar` 放入启动器中**当前游戏实例**的 `mods/` 目录。
+1. 从[正式版发布页](https://github.com/kunkunkunQoQ/Onomixel/releases/tag/v0.1.0) 下载 `onomixel-0.1.0.jar`，将它 放入启动器中**当前游戏实例**的 `mods/` 目录。
 2. 用 NeoForge 启动游戏。新配置默认开启**雷达**。进入世界后，视野外的苦力怕引信等受支持的威胁声会触发边缘提示。
 3. 要显示空间文字，在模组列表中选中 Onomixel，打开配置界面，开启**拟声词**并点击**保存并应用**。
 
