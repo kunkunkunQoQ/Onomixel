@@ -11,11 +11,22 @@ public final class PlaybackMailbox<T, P> {
     private final IdentityHashMap<T, Request<P>> requests = new IdentityHashMap<>();
     private final ArrayBlockingQueue<Confirmation<T>> confirmations = new ArrayBlockingQueue<>(CONFIRMATION_LIMIT);
 
-    private record Request<P>(Object world, P payload, long wallNanos) {}
+    private static final class Request<P> {
+        final Object world;
+        final P payload;
+        final long wallNanos;
+        boolean queued;
+
+        Request(Object world, P payload, long wallNanos) {
+            this.world = world;
+            this.payload = payload;
+            this.wallNanos = wallNanos;
+        }
+    }
     public record Confirmation<T>(T identity, long wallNanos) {}
 
     /** Call only on the client thread. */
-    public void request(T identity, Object world, P payload, long wallNanos) {
+    public synchronized void request(T identity, Object world, P payload, long wallNanos) {
         expire(wallNanos);
         if (requests.size() < REQUEST_LIMIT || requests.containsKey(identity)) {
             requests.put(identity, new Request<>(world, payload, wallNanos));
@@ -27,10 +38,18 @@ public final class PlaybackMailbox<T, P> {
         return confirmations.offer(new Confirmation<>(identity, wallNanos));
     }
 
+    /** The audio thread only confirms identities already admitted by a client-thread request. */
+    public synchronized boolean confirmRequested(T identity, long wallNanos) {
+        Request<P> request = requests.get(identity);
+        if (request == null || request.queued || wallNanos < request.wallNanos) return false;
+        request.queued = confirm(identity, wallNanos);
+        return request.queued;
+    }
+
     public Confirmation<T> poll() { return confirmations.poll(); }
 
     /** Call only on the client thread. A confirmation consumes its request exactly once. */
-    public P consume(Confirmation<T> confirmation, Object currentWorld, long wallNanos) {
+    public synchronized P consume(Confirmation<T> confirmation, Object currentWorld, long wallNanos) {
         Request<P> request = requests.get(confirmation.identity);
         // A delayed confirmation for an older play must not delete a newer request using the same identity.
         if (request == null || confirmation.wallNanos < request.wallNanos) return null;
@@ -41,15 +60,15 @@ public final class PlaybackMailbox<T, P> {
         return request.payload;
     }
 
-    public void expire(long wallNanos) {
+    public synchronized void expire(long wallNanos) {
         requests.values().removeIf(request -> wallNanos - request.wallNanos > MAX_DELAY_NANOS);
     }
 
-    public void clear() {
+    public synchronized void clear() {
         requests.clear();
         confirmations.clear();
     }
 
-    public int requestCount() { return requests.size(); }
+    public synchronized int requestCount() { return requests.size(); }
     public int confirmationCount() { return confirmations.size(); }
 }

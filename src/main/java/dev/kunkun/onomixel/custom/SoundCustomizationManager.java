@@ -1,251 +1,167 @@
 package dev.kunkun.onomixel.custom;
 
+import dev.kunkun.onomixel.sound.SoundDefinition;
+import dev.kunkun.onomixel.sound.SoundDefinitions;
 import dev.kunkun.onomixel.subtitle.VisualTypeRegistry;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicReference;
 
-/**
- * Central manager for custom onomatopoeia overrides across all tiers:
- * Tier 3: Local user configs (.minecraft/config/onomixel/custom_words.json)
- * Tier 2: Resource packs (assets/&lt;namespace&gt;/onomixel/custom_words.json)
- * Tier 1: Modder API registrations
- * Tier 0: Builtin sound mappings & inference engine
- *
- * Implements an isolated multi-tier storage architecture to prevent rules from wiping each other out during reloads.
- */
+/** Publishes a coherent user, resource-pack and addon rule set to sound and render consumers. */
 public final class SoundCustomizationManager {
     private static final System.Logger LOGGER = System.getLogger(SoundCustomizationManager.class.getName());
-
-    // Tier 1: Modder API registrations (persist across resource pack reloads)
-    private static final List<CustomWordRule> TIER1_API_RULES = new CopyOnWriteArrayList<>();
-
-    // Tier 2: Resource pack rules (reloaded on F3+T / resource reload)
-    private static final List<CustomWordRule> TIER2_PACK_RULES = new CopyOnWriteArrayList<>();
-
-    // Tier 3: Local user configuration rules (reloaded on F3+T, +1000 priority)
-    private static final List<CustomWordRule> TIER3_USER_RULES = new CopyOnWriteArrayList<>();
-
-    // Track sound IDs whose colors were overridden in VisualTypeRegistry so we can clean them up safely
-    private static final java.util.Set<String> REGISTERED_COLOR_SOUNDS = java.util.concurrent.ConcurrentHashMap.newKeySet();
-
-    private static final AtomicReference<CompiledWordOverrideIndex> ACTIVE_INDEX =
-            new AtomicReference<>(CompiledWordOverrideIndex.EMPTY);
-
     private static final List<Runnable> RELOAD_LISTENERS = new CopyOnWriteArrayList<>();
+    private static final List<CustomWordRule> apiRules = new ArrayList<>();
+    private static List<CustomWordRule> packRules = List.of();
+    private static List<CustomWordRule> userRules = List.of();
+
+    private record Rules(List<CompiledWordOverrideIndex> tiers, Map<String, SoundDefinition> legacyDefinitions,
+                         int activeCount, int totalCount, boolean hasRadar, boolean hasClusters) {}
+    private static final Rules EMPTY = new Rules(List.of(), Map.of(), 0, 0, false, false);
+    private static volatile Rules active = EMPTY;
 
     private SoundCustomizationManager() {}
 
-    /**
-     * Resolves customization rule for the given sound event ID.
-     */
     public static CustomWordRule resolve(String soundId) {
-        if (soundId == null) return null;
-        return ACTIVE_INDEX.get().find(soundId);
-    }
-
-    /**
-     * Retrieves the first active customization rule, useful for sandbox previewing.
-     */
-    public static CustomWordRule getFirstActiveRule() {
-        return ACTIVE_INDEX.get().getFirstRule();
-    }
-
-    /**
-     * Resolves the customized display string for the given sound event.
-     * Returns a string prefixed with "literal:" if it is raw text, or a translation key, or null if no rule matches.
-     * Zero-allocation guarantee: returns pre-cached formatted string directly.
-     */
-    public static String resolveDisplayText(String soundId, long seed) {
-        CustomWordRule rule = resolve(soundId);
-        return resolveDisplayText(rule, soundId, seed);
-    }
-
-    /**
-     * Resolves the customized display string using an already-resolved rule.
-     * Avoids duplicate index lookups and provides zero-allocation formatting.
-     */
-    public static String resolveDisplayText(CustomWordRule rule, String soundId, long seed) {
-        if (rule == null || rule.display() == null) {
-            return null;
+        var tiers = active.tiers();
+        for (int i = 0; i < tiers.size(); i++) {
+            CustomWordRule rule = tiers.get(i).find(soundId);
+            if (rule != null) return rule;
         }
+        return null;
+    }
+
+    public static SoundDefinition legacyPackDefinition(String soundId) {
+        return soundId == null ? null : active.legacyDefinitions().get(soundId);
+    }
+
+    public static CustomWordRule getFirstActiveRule() {
+        var tiers = active.tiers();
+        return tiers.isEmpty() ? null : tiers.getFirst().getFirstRule();
+    }
+
+    public static String resolveDisplayText(String soundId, long seed) {
+        return resolveDisplayText(resolve(soundId), soundId, seed);
+    }
+
+    public static String resolveDisplayText(CustomWordRule rule, String soundId, long seed) {
+        if (rule == null || rule.display() == null) return null;
         return rule.display().resolveFormatted(seed, soundId);
     }
 
-    /**
-     * Registers a rule from third-party Modder Java API (Tier 1).
-     * These rules persist cleanly across resource pack reloads.
-     */
-    public static void registerApiRule(CustomWordRule rule) {
-        Objects.requireNonNull(rule, "rule cannot be null");
-        TIER1_API_RULES.add(rule);
-        recompile();
+    public static synchronized void registerApiRule(CustomWordRule rule) {
+        apiRules.add(Objects.requireNonNull(rule, "rule cannot be null"));
+        publish(active.legacyDefinitions());
     }
 
-    /**
-     * Registers a batch of rules from third-party Modder Java API (Tier 1).
-     */
-    public static void registerApiRules(List<CustomWordRule> rules) {
+    public static synchronized void registerApiRules(List<CustomWordRule> rules) {
+        apiRules.addAll(Objects.requireNonNull(rules, "rules cannot be null"));
+        publish(active.legacyDefinitions());
+    }
+
+    /** Replaces all rules; used for standalone imports and tests. */
+    public static synchronized void applyRules(List<CustomWordRule> rules) {
         Objects.requireNonNull(rules, "rules cannot be null");
-        TIER1_API_RULES.addAll(rules);
-        recompile();
+        apiRules.clear();
+        apiRules.addAll(rules);
+        packRules = List.of();
+        userRules = List.of();
+        publish(Map.of());
     }
 
-    /**
-     * Applies a list of rules directly (used primarily for test environments).
-     */
-    public static void applyRules(List<CustomWordRule> rules) {
-        Objects.requireNonNull(rules, "rules cannot be null");
-        TIER1_API_RULES.clear();
-        TIER2_PACK_RULES.clear();
-        TIER3_USER_RULES.clear();
-        TIER1_API_RULES.addAll(rules);
-        recompile();
-    }
-
-    /**
-     * Parses and applies rules from a single JSON string.
-     */
     public static int applyJson(String jsonString) {
         List<CustomWordRule> parsed = CustomWordParser.parse(jsonString);
         applyRules(parsed);
         return parsed.size();
     }
 
-    /**
-     * Reloads and merges rules from both resource pack JSON strings and local configuration files.
-     * Note: Mod API rules (Tier 1) are safely preserved!
-     * Local user configuration rules (Tier 3) are automatically given elevated priority (+1000) over resource packs.
-     *
-     * @param localConfigFile path to .minecraft/config/onomixel/custom_words.json (may be null or non-existent)
-     * @param resourcePackJsons list of JSON contents gathered from active resource packs
-     * @return total count of rules active across all tiers
-     */
-    public static int reloadAll(Path localConfigFile, List<String> resourcePackJsons) {
-        // 1. Refresh Tier 2 (Resource Packs)
-        List<CustomWordRule> newPackRules = new ArrayList<>();
-        if (resourcePackJsons != null) {
-            for (String packJson : resourcePackJsons) {
-                if (packJson != null && !packJson.isBlank()) {
-                    newPackRules.addAll(CustomWordParser.parse(packJson));
-                }
-            }
-        }
-        TIER2_PACK_RULES.clear();
-        TIER2_PACK_RULES.addAll(newPackRules);
+    public static int reloadAll(Path localConfigFile, List<String> packJsons) {
+        return reloadAll(localConfigFile, packJsons, Map.of());
+    }
 
-        // 2. Refresh Tier 3 (Local User Config)
-        List<CustomWordRule> newUserRules = new ArrayList<>();
+    /** Reads the new layers before replacing the previous snapshot. Addon registrations survive reloads. */
+    public static synchronized int reloadAll(Path localConfigFile, List<String> packJsons,
+                                            Map<String, SoundDefinition> legacyDefinitions) {
+        List<CustomWordRule> newPackRules = new ArrayList<>();
+        if (packJsons != null) {
+            for (String json : packJsons) newPackRules.addAll(CustomWordParser.parse(json));
+        }
+        List<CustomWordRule> newUserRules = List.of();
         if (localConfigFile != null && Files.isRegularFile(localConfigFile)) {
             try {
-                String localJson = Files.readString(localConfigFile);
-                List<CustomWordRule> parsed = CustomWordParser.parse(localJson);
-                for (CustomWordRule r : parsed) {
-                    newUserRules.add(r.withPriority(r.priority() + 1000));
-                }
+                newUserRules = CustomWordParser.parse(Files.readString(localConfigFile));
             } catch (IOException e) {
-                LOGGER.log(System.Logger.Level.WARNING, "Failed to read local onomatopoeia config from " + localConfigFile + ": " + e.getMessage());
+                LOGGER.log(System.Logger.Level.WARNING, "Cannot read custom words from " + localConfigFile, e);
+                newUserRules = userRules;
             }
         }
-        TIER3_USER_RULES.clear();
-        TIER3_USER_RULES.addAll(newUserRules);
-
-        recompile();
-        return TIER1_API_RULES.size() + TIER2_PACK_RULES.size() + TIER3_USER_RULES.size();
+        packRules = newPackRules;
+        userRules = newUserRules;
+        publish(Map.copyOf(legacyDefinitions));
+        return totalRuleCount();
     }
 
-    /**
-     * Atomically recompiles all rules from Tier 1, Tier 2, and Tier 3 into the active index.
-     */
-    private static synchronized void recompile() {
-        List<CustomWordRule> aggregated = new ArrayList<>(
-                TIER1_API_RULES.size() + TIER2_PACK_RULES.size() + TIER3_USER_RULES.size()
-        );
-        aggregated.addAll(TIER1_API_RULES);
-        aggregated.addAll(TIER2_PACK_RULES);
-        aggregated.addAll(TIER3_USER_RULES);
-
-        CompiledWordOverrideIndex compiled = new CompiledWordOverrideIndex(aggregated);
-        ACTIVE_INDEX.set(compiled);
-
-        // Clean up previously registered custom colors from VisualTypeRegistry
-        for (String prevId : REGISTERED_COLOR_SOUNDS) {
-            VisualTypeRegistry.unregisterSoundColor(prevId);
-        }
-        REGISTERED_COLOR_SOUNDS.clear();
-
-        // Synchronize visual colors into VisualTypeRegistry (types stay evaluated via SoundCustomizationManager.resolve)
-        for (CustomWordRule rule : aggregated) {
-            if (rule.isExact() && (rule.vibrantColor() != null || rule.pastelColor() != null)) {
-                int vibrant = rule.vibrantColor() != null ? rule.vibrantColor() : 0xFFFFFF;
-                int pastel = rule.pastelColor() != null ? rule.pastelColor() : vibrant;
-                VisualTypeRegistry.registerSoundColor(rule.exactId(), vibrant, pastel);
-                REGISTERED_COLOR_SOUNDS.add(rule.exactId());
+    private static void publish(Map<String, SoundDefinition> definitions) {
+        List<CompiledWordOverrideIndex> tiers = new ArrayList<>(3);
+        var exactIds = new HashSet<String>();
+        int patternCount = 0;
+        boolean hasRadar = false;
+        boolean hasClusters = false;
+        for (var rules : List.of(userRules, packRules, apiRules)) {
+            if (rules.isEmpty()) continue;
+            var index = new CompiledWordOverrideIndex(rules);
+            if (index.isEmpty()) continue;
+            tiers.add(index);
+            hasRadar |= index.hasRadarRules();
+            hasClusters |= index.hasClusterRules();
+            for (var rule : rules) {
+                if (rule == null) continue;
+                if (rule.isExact()) exactIds.add(rule.exactId());
+                else patternCount++;
             }
         }
-        VisualTypeRegistry.invalidateResolutionCaches();
-
-        LOGGER.log(System.Logger.Level.INFO, "Onomixel: Recompiled {0} custom onomatopoeia rules (Tier1 API: {1}, Tier2 Pack: {2}, Tier3 User: {3}).",
-                compiled.size(), TIER1_API_RULES.size(), TIER2_PACK_RULES.size(), TIER3_USER_RULES.size());
-        notifyReloadListeners();
-    }
-
-    private static void notifyReloadListeners() {
+        active = new Rules(List.copyOf(tiers), definitions, exactIds.size() + patternCount,
+                userRules.size() + packRules.size() + apiRules.size(), hasRadar, hasClusters);
+        invalidateDerivedCaches();
         for (Runnable listener : RELOAD_LISTENERS) {
             try {
                 listener.run();
             } catch (Throwable ignored) {
-                // Safeguard reload path against buggy third-party listeners.
+                // Keep one addon listener from interrupting publication to the rest.
             }
         }
     }
 
+    private static void invalidateDerivedCaches() {
+        VisualTypeRegistry.invalidateResolutionCaches();
+        SoundDefinitions.clearBuiltinCache();
+    }
+
     public static void addReloadListener(Runnable listener) {
-        if (listener != null) {
-            RELOAD_LISTENERS.add(listener);
-        }
+        if (listener != null) RELOAD_LISTENERS.add(listener);
     }
 
     public static void removeReloadListener(Runnable listener) {
-        if (listener != null) {
-            RELOAD_LISTENERS.remove(listener);
-        }
+        if (listener != null) RELOAD_LISTENERS.remove(listener);
     }
 
-    public static boolean hasRadarOverrides() {
-        return ACTIVE_INDEX.get().hasRadarRules();
-    }
+    public static boolean hasRadarOverrides() { return active.hasRadar(); }
+    public static boolean hasClusterOverrides() { return active.hasClusters(); }
+    public static int activeRuleCount() { return active.activeCount(); }
+    public static int totalRuleCount() { return active.totalCount(); }
 
-    public static boolean hasClusterOverrides() {
-        return ACTIVE_INDEX.get().hasClusterRules();
-    }
-
-    /**
-     * Resets customization index and all tiers back to empty.
-     */
-    public static void resetToDefaults() {
-        TIER1_API_RULES.clear();
-        TIER2_PACK_RULES.clear();
-        TIER3_USER_RULES.clear();
-        for (String prevId : REGISTERED_COLOR_SOUNDS) {
-            VisualTypeRegistry.unregisterSoundColor(prevId);
-        }
-        REGISTERED_COLOR_SOUNDS.clear();
-        ACTIVE_INDEX.set(CompiledWordOverrideIndex.EMPTY);
-        VisualTypeRegistry.invalidateResolutionCaches();
-    }
-
-    public static int activeRuleCount() {
-        return ACTIVE_INDEX.get().size();
-    }
-
-    public static int totalRuleCount() {
-        return TIER1_API_RULES.size() + TIER2_PACK_RULES.size() + TIER3_USER_RULES.size();
+    public static synchronized void resetToDefaults() {
+        apiRules.clear();
+        userRules = List.of();
+        packRules = List.of();
+        active = EMPTY;
+        invalidateDerivedCaches();
     }
 }

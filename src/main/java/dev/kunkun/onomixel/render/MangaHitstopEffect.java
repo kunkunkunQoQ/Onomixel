@@ -28,6 +28,8 @@ public final class MangaHitstopEffect {
     public static final float HITSTOP_STRETCH_X = 1.35F;
     public static final float HITSTOP_STRETCH_Y = 0.75F;
     public static final int DEFAULT_SPIKE_COUNT = 6;
+    static final float SPIKE_OUTLINE_SIDE = 0.6F;
+    static final float SPIKE_OUTLINE_TIP = 1.2F;
 
     public static final int STARBURST_GOLD_COLOR = 0xFFE040; // Vibrant comic golden yellow
     public static final int STARBURST_BLACK_COLOR = 0x191B24; // Comic ink outline black
@@ -121,18 +123,37 @@ public final class MangaHitstopEffect {
         );
     }
 
-    /**
-     * Generates radial starburst speedline spikes.
-     */
+    static float baseRadius(float textHalfWidth, float textHalfHeight) {
+        return Math.max(textHalfWidth, textHalfHeight) + 2.0F;
+    }
+
+    static int spikeOpacity(float alpha) {
+        return (int) Math.clamp(alpha * 220.0F, 0.0F, 255.0F);
+    }
+
+    private static float spikeLength(float alpha) {
+        return 12.0F + 16.0F * (1 - Math.clamp(alpha, 0.0F, 1.0F));
+    }
+
+    private static float spikeThickness(float alpha) {
+        return 2.8F * (0.5F + 0.5F * Math.clamp(alpha, 0.0F, 1.0F));
+    }
+
+    /** Encloses the outer black corners after any spike rotation, in unscaled text units. */
+    static float visibleBurstRadius(float alpha, float baseRadius) {
+        if (spikeOpacity(alpha) < 4) return 0;
+        return (float) Math.hypot(baseRadius + spikeLength(alpha) + SPIKE_OUTLINE_TIP,
+                spikeThickness(alpha) * 0.5F + SPIKE_OUTLINE_SIDE);
+    }
+
+    /** Generates radial starburst speedline spikes. */
     public static List<StarburstSpike> generateSpikes(int count, float starburstAlpha, float baseRadius) {
         if (count <= 0 || !Float.isFinite(starburstAlpha) || !Float.isFinite(baseRadius) || starburstAlpha <= 0.01F) {
             return List.of();
         }
         int clampedCount = Math.min(count, 32);
-        float progress = 1.0F - Math.clamp(starburstAlpha, 0.0F, 1.0F); // 0 at start, 1 at 100ms
-        float expansion = progress * 16.0F; // Expands outward by 16px over 100ms
-        float length = 12.0F + expansion;
-        float thickness = Math.max(1.0F, 2.8F * (1.0F - progress * 0.5F));
+        float length = spikeLength(starburstAlpha);
+        float thickness = spikeThickness(starburstAlpha);
         float safeBaseRadius = Math.max(0.0F, baseRadius);
 
         List<StarburstSpike> list = new ArrayList<>(clampedCount);

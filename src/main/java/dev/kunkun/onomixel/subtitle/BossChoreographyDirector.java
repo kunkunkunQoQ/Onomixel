@@ -397,9 +397,10 @@ public final class BossChoreographyDirector {
     public static BossType identifyBoss(String soundId) {
         if (soundId == null || soundId.isEmpty()) return null;
         String id = normalizeLower(soundId);
-        if (id.contains("warden")) return BossType.WARDEN;
-        if (id.contains("ender_dragon") || id.contains("dragon")) return BossType.ENDER_DRAGON;
-        if (id.contains("wither")) return BossType.WITHER;
+        int pathStart = id.indexOf(':') + 1;
+        if (id.startsWith("entity.warden.", pathStart)) return BossType.WARDEN;
+        if (id.startsWith("entity.ender_dragon.", pathStart)) return BossType.ENDER_DRAGON;
+        if (id.startsWith("entity.wither.", pathStart)) return BossType.WITHER;
         return null;
     }
 

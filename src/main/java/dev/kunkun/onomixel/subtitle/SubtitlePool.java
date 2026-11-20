@@ -140,9 +140,26 @@ public final class SubtitlePool {
                       double sourceX, double sourceY, double sourceZ, double x, double y, double z,
                       long now, long duration, int priority, SoundSemantics semantics, String mergeGroup,
                       boolean localPlayerShot) {
+        store(soundId, key, worldId, category, sourceX, sourceY, sourceZ, x, y, z, now, duration,
+                priority, semantics, mergeGroup, localPlayerShot, true);
+    }
+
+    /** Gives each streaming playback its own subtitle ID, even when identical sounds overlap. */
+    public Subtitle addStreamingAt(String soundId, String key, String worldId, String category,
+                                   double sourceX, double sourceY, double sourceZ, double x, double y, double z,
+                                   long now, long duration, int priority, SoundSemantics semantics, String mergeGroup,
+                                   boolean localPlayerShot) {
+        return store(soundId, key, worldId, category, sourceX, sourceY, sourceZ, x, y, z, now, duration,
+                priority, semantics, mergeGroup, localPlayerShot, false);
+    }
+
+    private Subtitle store(String soundId, String key, String worldId, String category,
+                           double sourceX, double sourceY, double sourceZ, double x, double y, double z,
+                           long now, long duration, int priority, SoundSemantics semantics, String mergeGroup,
+                           boolean localPlayerShot, boolean merge) {
         if (!Double.isFinite(sourceX) || !Double.isFinite(sourceY) || !Double.isFinite(sourceZ)
                 || !Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z) || duration <= 0
-                || semantics == null || mergeGroup == null) return;
+                || semantics == null || mergeGroup == null) return null;
         expire(now);
 
         // A new high-signal event clears nearby low-signal clutter (and block break supersedes block hit).
@@ -153,11 +170,14 @@ public final class SubtitlePool {
                             && previous.soundId.startsWith("minecraft:block."))));
         }
 
-        for (int i = 0; i < active.size(); i++) {
+        long retainedRadarExpiry = 0;
+        for (int i = 0; merge && i < active.size(); i++) {
             Subtitle previous = active.get(i);
             if (sameSource(previous, worldId, category, sourceX, sourceY, sourceZ)
                     && previous.semantics == semantics && previous.mergeGroup.equals(mergeGroup)) {
-                if (Math.max(previous.expiresNanos, previous.radarExpiresNanos) <= now) {
+                if (now >= previous.hardExpiresNanos) {
+                    retainedRadarExpiry = previous.radarExpiresNanos;
+                    if (retainedRadarExpiry > now) localPlayerShot &= previous.localPlayerShot;
                     active.remove(i);
                     break;
                 }
@@ -165,45 +185,60 @@ public final class SubtitlePool {
                 long radarDur = ThreatRegistry.radarDurationNanos(soundId, duration);
                 long refreshedRadarExpires = radarDur > 0 ? now + radarDur : refreshedExpires;
                 int nextRepeats = Math.min(previous.repeatCount + 1, 64);
-                active.set(i, new Subtitle(previous.id, soundId, key, worldId, category,
+                Subtitle refreshed = new Subtitle(previous.id, soundId, key, worldId, category,
                         previous.sourceX, previous.sourceY, previous.sourceZ,
                         previous.x, previous.y, previous.z, previous.createdNanos,
                         Math.max(previous.expiresNanos, refreshedExpires), previous.hardExpiresNanos, now,
                         Math.max(previous.priority, priority), semantics, mergeGroup,
                         previous.localPlayerShot && localPlayerShot,
-                        Math.max(previous.radarExpiresNanos, refreshedRadarExpires), nextRepeats));
-                return;
+                        Math.max(previous.radarExpiresNanos, refreshedRadarExpires), nextRepeats);
+                active.set(i, refreshed);
+                return refreshed;
             }
         }
         if (active.size() == CAPACITY) {
             int weakestIndex = weakestIndex();
             Subtitle weakest = active.get(weakestIndex);
-            if (effectivePriority(semantics, priority) < effectivePriority(weakest.semantics, weakest.priority)) return;
+            if (effectivePriority(semantics, priority) < effectivePriority(weakest.semantics, weakest.priority)) return null;
             active.remove(weakestIndex);
         }
         long radarDur = ThreatRegistry.radarDurationNanos(soundId, duration);
         long radarExpires = radarDur > 0 ? now + radarDur : now + duration;
-        active.add(new Subtitle(++sequence, soundId, key, worldId, category, sourceX, sourceY, sourceZ, x, y, z,
+        Subtitle added = new Subtitle(++sequence, soundId, key, worldId, category, sourceX, sourceY, sourceZ, x, y, z,
                 now, now + duration, now + 2 * duration, now, priority, semantics, mergeGroup, localPlayerShot,
-                radarExpires));
+                Math.max(radarExpires, retainedRadarExpiry));
+        active.add(added);
+        return added;
     }
 
     public void renewStreaming(String soundId, double x, double y, double z, long newExpiresNanos) {
-        if (soundId == null || !Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)) return;
+        // Legacy single-source callers cannot identify a playback when several share an ID.
+        Subtitle match = null;
+        for (Subtitle subtitle : active) {
+            if (!subtitle.soundId.equals(soundId)) continue;
+            if (match != null) return;
+            match = subtitle;
+        }
+        if (match != null) renewStreaming(match.id, x, y, z, newExpiresNanos, false);
+    }
+
+    public boolean renewStreaming(long subtitleId, double x, double y, double z, long expiresNanos, boolean fading) {
+        if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)) return false;
         for (int i = 0; i < active.size(); i++) {
             Subtitle previous = active.get(i);
-            if (previous.soundId().equals(soundId)) {
-                long radarDur = ThreatRegistry.radarDurationNanos(soundId, newExpiresNanos - previous.createdNanos());
-                long newRadarExpires = radarDur > 0 ? previous.triggeredNanos() + radarDur : newExpiresNanos;
+            if (previous.id == subtitleId) {
                 active.set(i, new Subtitle(previous.id(), previous.soundId(), previous.translationKey(),
-                        previous.worldId(), previous.category(), x, y, z, x, y, z,
-                        previous.createdNanos(), Math.max(previous.expiresNanos(), newExpiresNanos),
+                        previous.worldId(), previous.category(), x, y, z,
+                        x + (previous.x - previous.sourceX), y + (previous.y - previous.sourceY),
+                        z + (previous.z - previous.sourceZ),
+                        previous.createdNanos(), fading ? expiresNanos : Math.max(previous.expiresNanos(), expiresNanos),
                         previous.hardExpiresNanos(), previous.triggeredNanos(), previous.priority(),
                         previous.semantics(), previous.mergeGroup(), previous.localPlayerShot(),
-                        Math.max(previous.radarExpiresNanos(), newRadarExpires)));
-                return;
+                        previous.radarExpiresNanos(), previous.repeatCount()));
+                return true;
             }
         }
+        return false;
     }
 
     /** Call after expire: repeat detection uses the source, independent of the chosen display point. */

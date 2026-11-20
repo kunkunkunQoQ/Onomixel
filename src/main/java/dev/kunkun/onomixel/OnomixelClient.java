@@ -20,6 +20,7 @@ import net.neoforged.fml.InterModComms;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.config.ModConfig;
+import net.neoforged.fml.event.config.ModConfigEvent;
 import net.neoforged.fml.event.lifecycle.InterModProcessEvent;
 import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
 import net.neoforged.neoforge.client.event.AddClientReloadListenersEvent;
@@ -39,6 +40,9 @@ public final class OnomixelClient {
     private static final Logger LOGGER = LoggerFactory.getLogger(OnomixelClient.class);
 
     public OnomixelClient(IEventBus modBus, ModContainer container) {
+        modBus.addListener(ModConfigEvent.Loading.class, OnomixelClient::onConfigChanged);
+        modBus.addListener(ModConfigEvent.Reloading.class, OnomixelClient::onConfigChanged);
+        modBus.addListener(ModConfigEvent.Unloading.class, OnomixelClient::onConfigChanged);
         container.registerConfig(ModConfig.Type.CLIENT, OnomixelConfig.SPEC);
         container.registerExtensionPoint(IConfigScreenFactory.class, (c, parent) -> new OnomixelConfigScreen(parent));
         ClientSoundCapture capture = new ClientSoundCapture();
@@ -55,6 +59,12 @@ public final class OnomixelClient {
                         (net.minecraft.server.packs.resources.ResourceManagerReloadListener) SoundOverrideLoader::reloadAll));
         LOGGER.info("Onomixel loaded: {} mapped sounds, dynamic local layout and semantic world-text animation enabled.",
                 BuiltinSoundMappings.mappings().size());
+    }
+
+    private static void onConfigChanged(ModConfigEvent event) {
+        if (event.getConfig().getSpec() == OnomixelConfig.SPEC) {
+            OnomixelConfig.refreshSnapshot();
+        }
     }
 
     private void onInterModProcess(InterModProcessEvent event) {

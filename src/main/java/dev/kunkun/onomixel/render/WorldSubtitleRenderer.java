@@ -26,6 +26,7 @@ public final class WorldSubtitleRenderer {
     private final CaptionTextCache texts = new CaptionTextCache();
     private final DynamicSubtitleLayout dynamicLayout = new DynamicSubtitleLayout(texts);
     private boolean layoutCleared = true;
+    private long worldGeneration;
 
     private record Text(double x, double y, double z, float scaleX, float scaleY, float tilt,
                         CaptionTextCache.Text layout, int color, int outline, float starburstAlpha) {}
@@ -41,6 +42,12 @@ public final class WorldSubtitleRenderer {
     public void extract(ExtractLevelRenderStateEvent event) {
         Minecraft minecraft = Minecraft.getInstance();
         long now = capture.pump(minecraft);
+        long generation = capture.worldGeneration();
+        if (worldGeneration != generation) {
+            dynamicLayout.clear();
+            layoutCleared = true;
+            worldGeneration = generation;
+        }
         var settings = capture.settings();
         if (!settings.enabled() || !settings.spatialWords() || minecraft.level != event.getLevel()) {
             if (!layoutCleared) {
@@ -108,7 +115,7 @@ public final class WorldSubtitleRenderer {
         float alpha = text.starburstAlpha;
         if (alpha <= 0.01F) return;
 
-        int alphaInt = (int) Math.clamp(alpha * 220.0F, 0.0F, 255.0F);
+        int alphaInt = MangaHitstopEffect.spikeOpacity(alpha);
         if (alphaInt < 4) return;
 
         int goldColor = (alphaInt << 24) | (MangaHitstopEffect.STARBURST_GOLD_COLOR & 0xFFFFFF);
@@ -116,7 +123,7 @@ public final class WorldSubtitleRenderer {
 
         float halfW = text.layout.halfWidth();
         float halfH = text.layout.halfHeight();
-        float baseRadius = Math.max(halfW, halfH) + 2.0F;
+        float baseRadius = MangaHitstopEffect.baseRadius(halfW, halfH);
 
         var spikes = MangaHitstopEffect.generateSpikes(MangaHitstopEffect.DEFAULT_SPIKE_COUNT, alpha, baseRadius);
         for (var spike : spikes) {
@@ -125,8 +132,8 @@ public final class WorldSubtitleRenderer {
 
             float halfThick = spike.thickness() / 2.0F;
             // High-contrast comic outline spike
-            collector.submitTextBackground(poses, -halfThick - 0.6F, spike.innerRadius(),
-                    halfThick + 0.6F, spike.outerRadius() + 1.2F, blackColor,
+            collector.submitTextBackground(poses, -halfThick - MangaHitstopEffect.SPIKE_OUTLINE_SIDE, spike.innerRadius(),
+                    halfThick + MangaHitstopEffect.SPIKE_OUTLINE_SIDE, spike.outerRadius() + MangaHitstopEffect.SPIKE_OUTLINE_TIP, blackColor,
                     Font.DisplayMode.NORMAL, FULL_BRIGHT);
 
             // Core golden burst spike

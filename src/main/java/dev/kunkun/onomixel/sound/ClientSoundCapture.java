@@ -4,6 +4,7 @@ import dev.kunkun.onomixel.OnomixelConfig;
 import dev.kunkun.onomixel.api.OnomixelAPI;
 import dev.kunkun.onomixel.subtitle.BossChoreographyDirector;
 import dev.kunkun.onomixel.subtitle.CaptionSettings;
+import dev.kunkun.onomixel.subtitle.CaptionPlacement.Point;
 import dev.kunkun.onomixel.subtitle.CaptionVisuals;
 import dev.kunkun.onomixel.subtitle.StreamingCaptionSession;
 import dev.kunkun.onomixel.subtitle.SubtitleClock;
@@ -34,6 +35,7 @@ import net.neoforged.neoforge.event.level.LevelEvent;
 import net.neoforged.neoforge.event.PlayLevelSoundEvent;
 import net.neoforged.neoforge.event.entity.ProjectileImpactEvent;
 
+import java.lang.ref.WeakReference;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Observes requests and confirmed source starts without replacing sounds or vanilla listeners. */
@@ -48,7 +50,6 @@ public final class ClientSoundCapture {
     private final SoundLifecycleCoordinator lifecycle = new SoundLifecycleCoordinator(
             subtitles, clock, mailbox, delayedEmissions, throttle, projectileEvidence
     );
-    private static final StackWalker SOUND_CALLER = StackWalker.getInstance();
     private ClientLevel currentLevel;
     private volatile CaptionSettings settings = CaptionSettings.defaults();
     private volatile long lastActiveNanos;
@@ -91,8 +92,7 @@ public final class ClientSoundCapture {
             double dx = sound.getX() - minecraft.player.getX();
             double dy = sound.getY() - minecraft.player.getY();
             double dz = sound.getZ() - minecraft.player.getZ();
-            if (dx * dx + dy * dy + dz * dz <= 1.0 && SOUND_CALLER.walk(frames -> frames.limit(8).anyMatch(frame ->
-                    SoundEventPolicy.isLocalPlayerCall(frame.getClassName(), frame.getMethodName())))) return;
+            if (dx * dx + dy * dy + dz * dz <= 1.0 && SoundEventPolicy.hasPlaybackCaller(SoundEventPolicy::isLocalPlayerCall)) return;
         }
         long requestedAt = System.nanoTime();
         var explicitOwner = projectileEvidence.resolveEntitySound(soundId, sound.getX(), sound.getY(), sound.getZ(), requestedAt);
@@ -109,7 +109,7 @@ public final class ClientSoundCapture {
         if (sem == SoundSemantics.BREAK || sem == SoundSemantics.INTERACTION
                 || sem == SoundSemantics.ATTACK || sem == SoundSemantics.DAMAGE
                 || sem == SoundSemantics.PICKUP || sem == SoundSemantics.LANDING) {
-            mailbox.confirm(sound, requestedAt);
+            mailbox.confirmRequested(sound, requestedAt);
         }
     }
 
@@ -162,15 +162,8 @@ public final class ClientSoundCapture {
     public void onStreamingSource(PlayStreamingSourceEvent event) { onSourceStarted(event); }
 
     private void onSourceStarted(SoundEvent.SoundSourceEvent event) {
-        // Executed by SoundEngineExecutor: only inspect the local channel and immutable identity.
-        String soundId = event.getSound().getIdentifier().toString();
-        if (!shouldCaptureSound(settings, soundId)) return;
-        if (SoundDefinitions.contains(soundId)
-                && event.getChannel().playing()) {
-            mailbox.confirm(event.getSound(), System.nanoTime());
-            for (var session : StreamingCaptionSession.getSessionsBySound(soundId)) {
-                session.heartbeat(System.nanoTime());
-            }
+        if (event.getChannel().playing()) {
+            mailbox.confirmRequested(event.getSound(), System.nanoTime());
         }
     }
 
@@ -218,6 +211,7 @@ public final class ClientSoundCapture {
             return now;
         }
         mailbox.expire(wallNow);
+        renewStreamingCaptions(now);
         subtitles.expire(now);
 
         // Acoustic Speed-of-Sound: deliver pending physically delayed atmospheric events
@@ -267,8 +261,10 @@ public final class ClientSoundCapture {
                 duration = Math.max(duration, 1_650_000_000L);
             }
             String world = currentLevel.dimension().identifier().toString();
-            var existing = subtitles.existing(world, request.category.name(), request.x, request.y, request.z,
+            boolean streaming = StreamingCaptionSession.isStreamingCandidate(soundId);
+            var existing = streaming ? null : subtitles.existing(world, request.category.name(), request.x, request.y, request.z,
                     definition.semantics(), definition.mergeGroup());
+            if (existing != null && now >= existing.hardExpiresNanos()) existing = null;
             var anchor = existing == null
                     ? SpatialAnchorResolver.initialAnchor(minecraft, definition, request.x, request.y, request.z)
                     : new dev.kunkun.onomixel.subtitle.CaptionPlacement.Point(existing.x(), existing.y(), existing.z());
@@ -311,9 +307,18 @@ public final class ClientSoundCapture {
             String effectiveKey = customText != null ? customText : definition.translationKey();
 
             if (existing == null) newPlacements++;
-            subtitles.addAt(soundId, effectiveKey, world, request.category.name(),
-                    request.x, request.y, request.z, anchor.x(), anchor.y(), anchor.z(), now, duration,
-                    definition.importance(), definition.semantics(), definition.mergeGroup(), request.localPlayerShot());
+            if (streaming) {
+                var subtitle = subtitles.addStreamingAt(soundId, effectiveKey, world, request.category.name(),
+                        request.x, request.y, request.z, anchor.x(), anchor.y(), anchor.z(), now, duration,
+                        definition.importance(), definition.semantics(), definition.mergeGroup(), request.localPlayerShot());
+                if (subtitle != null) {
+                    trackPlayback(subtitle, request.engine(), confirmation.identity(), now);
+                }
+            } else {
+                subtitles.addAt(soundId, effectiveKey, world, request.category.name(),
+                        request.x, request.y, request.z, anchor.x(), anchor.y(), anchor.z(), now, duration,
+                        definition.importance(), definition.semantics(), definition.mergeGroup(), request.localPlayerShot());
+            }
 
             if (!request.localPlayerShot() && settings.threatRadar() && OnomixelAPI.hasRadarListeners()) {
                 ThreatRegistry.ThreatLevel tLevel = ThreatRegistry.evaluate(soundId);
@@ -325,60 +330,45 @@ public final class ClientSoundCapture {
             if (BossChoreographyDirector.isBossSound(soundId)) {
                 BossChoreographyDirector.getInstance().onSoundEvent(soundId, request.x, request.y, request.z, now);
             }
-            if (StreamingCaptionSession.isStreamingCandidate(soundId)) {
-                var engRef = new java.lang.ref.WeakReference<>(request.engine);
-                var sndRef = new java.lang.ref.WeakReference<>(confirmation.identity());
-                var session = StreamingCaptionSession.getSessionBySound(soundId);
-                if (session == null || session.isTerminated()) {
-                    session = new StreamingCaptionSession(
-                            System.nanoTime(),
-                            soundId,
-                            effectiveKey,
-                            StreamingCaptionSession.DEFAULT_HANDLE,
-                            anchor,
-                            now
-                    );
-                    session.setLivePlayingCheck(() -> {
-                        var eng = engRef.get();
-                        var snd = sndRef.get();
-                        return eng != null && snd != null && eng.isActive(snd);
-                    });
-                    StreamingCaptionSession.registerSession(session);
-                } else {
-                    session.setLivePlayingCheck(() -> {
-                        var eng = engRef.get();
-                        var snd = sndRef.get();
-                        return eng != null && snd != null && eng.isActive(snd);
-                    });
-                    session.heartbeat(now);
-                }
-            }
         }
 
-        // Streaming Caption Sessions update & dynamic coordinate tracking
+        return now;
+    }
+
+    private void renewStreamingCaptions(long now) {
         for (var session : StreamingCaptionSession.activeSessions()) {
             session.pollLiveHeartbeat(now);
             session.update(now);
             if (session.isActive() || session.isFadingOut()) {
-                if (session.isActive() && minecraft.player != null) {
-                    if (session.soundId().contains("minecart") && minecraft.player.getVehicle() != null) {
-                        var v = minecraft.player.getVehicle();
-                        session.updatePosition(v.getX(), v.getY() + 0.5, v.getZ());
-                    } else if (session.soundId().contains("elytra")) {
-                        session.updatePosition(minecraft.player.getX(), minecraft.player.getY() + 0.3, minecraft.player.getZ());
-                    }
-                }
                 var pos = session.currentPosition(0.0f);
                 long targetExpiry = session.isFadingOut()
                         ? session.stoppedAtNanos() + StreamingCaptionSession.FADE_OUT_DURATION_NANOS
                         : now + 1_000_000_000L;
-                subtitles.renewStreaming(session.soundId(), pos.x(), pos.y(), pos.z(), targetExpiry);
+                if (!subtitles.renewStreaming(session.id(), pos.x(), pos.y(), pos.z(), targetExpiry, session.isFadingOut())) {
+                    StreamingCaptionSession.removeSession(session.id());
+                }
             } else if (session.isTerminated()) {
                 StreamingCaptionSession.removeSession(session.id());
             }
         }
+    }
 
-        return now;
+    private static void trackPlayback(SubtitlePool.Subtitle subtitle, SoundEngine engine, SoundInstance sound, long now) {
+        var engineRef = new WeakReference<>(engine);
+        var soundRef = new WeakReference<>(sound);
+        var session = new StreamingCaptionSession(subtitle.id(), subtitle.soundId(), subtitle.translationKey(),
+                StreamingCaptionSession.DEFAULT_HANDLE,
+                new Point(subtitle.sourceX(), subtitle.sourceY(), subtitle.sourceZ()), now);
+        session.setLivePlayingCheck(() -> {
+            var liveEngine = engineRef.get();
+            var liveSound = soundRef.get();
+            return liveEngine != null && liveSound != null && liveEngine.isActive(liveSound);
+        });
+        session.setPositionSupplier(partialTick -> {
+            var liveSound = soundRef.get();
+            return liveSound == null ? null : new Point(liveSound.getX(), liveSound.getY(), liveSound.getZ());
+        });
+        StreamingCaptionSession.registerSession(session);
     }
 
     private void synchronizeWorld(Minecraft minecraft) {
@@ -428,4 +418,5 @@ public final class ClientSoundCapture {
     public SubtitlePool subtitles() { return subtitles; }
     public CaptionSettings settings() { return settings; }
     public long currentActiveNanos() { return lastActiveNanos; }
+    public long worldGeneration() { return lifecycle.worldGeneration(); }
 }

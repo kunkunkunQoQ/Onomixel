@@ -12,7 +12,39 @@ public final class ThreatRadarMerger {
     /** Cap for allowing a newer same-level phase sound to supersede a slightly closer stale position. */
     private static final double PHASE_OVERRIDE_MAX_DIST_DIFF = 3.0;
 
-    private ThreatRadarMerger() {}
+    private final Candidate[] candidates = new Candidate[SubtitlePool.CAPACITY];
+
+    public ThreatRadarMerger() {
+        for (int i = 0; i < candidates.length; i++) candidates[i] = new Candidate();
+    }
+
+    /** Returned slots belong to this merger and are reused on the next HUD frame. */
+    public Candidate candidate(int index) {
+        return candidates[index];
+    }
+
+    public int collectAndSort(SubtitlePool subtitles, long now, double camX, double camY, double camZ,
+                              double lookX, double lookY, double lookZ, double upX, double upY, double upZ,
+                              double fov, double aspect, double mergeRange) {
+        int count = 0;
+        for (SubtitlePool.Subtitle item : subtitles.activeView()) {
+            if (item.localPlayerShot()) continue;
+            String id = item.soundId();
+            long expires = item.radarExpiresNanos() > 0 ? item.radarExpiresNanos()
+                    : item.triggeredNanos() + ThreatRegistry.radarDurationNanos(id);
+            if (now > 0 && now >= expires) continue;
+            ThreatRegistry.ThreatLevel level = ThreatRegistry.evaluate(id);
+            if (level == ThreatRegistry.ThreatLevel.NONE) continue;
+            double maxDistance = ThreatRegistry.maxRadarDistance(level);
+            double distanceSq = item.sourceDistanceSquared(camX, camY, camZ);
+            if (distanceSq < 0.85 * 0.85 || distanceSq > maxDistance * maxDistance) continue;
+            if (!ThreatRadarCalculator.isOffScreen(camX, camY, camZ, lookX, lookY, lookZ, upX, upY, upZ,
+                    item.sourceX(), item.sourceY(), item.sourceZ(), fov, aspect)) continue;
+            candidates[count++].set(id, item.sourceX(), item.sourceY(), item.sourceZ(), level,
+                    Math.sqrt(distanceSq), maxDistance, item.triggeredNanos());
+        }
+        return mergeAndSort(candidates, count, camX, camY, camZ, mergeRange);
+    }
 
     /** Reusable mutable candidate container allocated once per renderer instance. */
     public static final class Candidate {

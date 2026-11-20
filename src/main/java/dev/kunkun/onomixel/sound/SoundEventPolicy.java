@@ -7,12 +7,14 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BooleanSupplier;
+import java.util.function.BiPredicate;
 
 /** Explicit special cases for attributable movement sounds, capture gating, and real rain surfaces. */
 public final class SoundEventPolicy {
     private record SelfActionPolicy(String requiredCategory, double maxDistanceSquared) {}
 
     private static final Map<String, SelfActionPolicy> CUSTOM_SELF_ACTIONS = new ConcurrentHashMap<>();
+    private static final StackWalker SOUND_CALLER = StackWalker.getInstance();
 
     private SoundEventPolicy() {}
 
@@ -72,6 +74,10 @@ public final class SoundEventPolicy {
 
     public static boolean isLocalPlayerCall(String className, String methodName) {
         return "net.minecraft.client.player.LocalPlayer".equals(className) && "playSound".equals(methodName);
+    }
+
+    static boolean hasPlaybackCaller(BiPredicate<String, String> matches) {
+        return SOUND_CALLER.walk(frames -> frames.anyMatch(frame -> matches.test(frame.getClassName(), frame.getMethodName())));
     }
 
     /** Marks vanilla player projectile launches and self teleports by sound identity, category and local source position. */

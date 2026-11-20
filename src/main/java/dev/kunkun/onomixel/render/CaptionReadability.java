@@ -49,4 +49,8 @@ public final class CaptionReadability {
     public static boolean fullyOnScreen(BillboardProjection.Bounds text) {
         return text != null && text.minX() >= -1 && text.maxX() <= 1 && text.minY() >= -1 && text.maxY() <= 1;
     }
+
+    static boolean canDisplay(BillboardProjection.Bounds finalBounds, boolean selfHurt, CrosshairComfortZone crosshair) {
+        return fullyOnScreen(finalBounds) && (!selfHurt || crosshair.zoneOf(finalBounds) != CrosshairComfortZone.Zone.CORE);
+    }
 }

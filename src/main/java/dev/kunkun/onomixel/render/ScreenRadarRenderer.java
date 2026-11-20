@@ -1,7 +1,6 @@
 package dev.kunkun.onomixel.render;
 
 import dev.kunkun.onomixel.sound.ClientSoundCapture;
-import dev.kunkun.onomixel.subtitle.SubtitlePool;
 import dev.kunkun.onomixel.subtitle.ThreatRadarCalculator;
 import dev.kunkun.onomixel.subtitle.ThreatRadarMerger;
 import dev.kunkun.onomixel.subtitle.ThreatRegistry;
@@ -34,20 +33,20 @@ public final class ScreenRadarRenderer {
     private final ClientSoundCapture capture;
 
     // Zero-allocation pre-allocated scratch pools for 60-144 FPS rendering
-    private static final int MAX_CANDIDATES = 32;
     private static final int MAX_DISPLAYED = 4;
 
-    private final ThreatRadarMerger.Candidate[] candidatePool = new ThreatRadarMerger.Candidate[MAX_CANDIDATES];
-    private final ThreatRadarMerger.Candidate[] selectedCandidates = new ThreatRadarMerger.Candidate[MAX_DISPLAYED];
+    private static final int BADGE_TEXT_PADDING = 8;
+    private final ThreatRadarMerger radar = new ThreatRadarMerger();
     private final String[] displayTexts = new String[MAX_DISPLAYED];
     private final int[] textWidths = new int[MAX_DISPLAYED];
     private final int[] halfWidths = new int[MAX_DISPLAYED];
     private final int[] halfHeights = new int[MAX_DISPLAYED];
     private final ThreatRadarCalculator.EdgeTarget[] targets = new ThreatRadarCalculator.EdgeTarget[MAX_DISPLAYED];
-    private final String[] cachedSoundIds = new String[MAX_DISPLAYED];
+    private final String[] cachedNameKeys = new String[MAX_DISPLAYED];
     private final int[] cachedTenths = new int[MAX_DISPLAYED];
     private final boolean[] cachedCriticals = new boolean[MAX_DISPLAYED];
     private net.minecraft.locale.Language cachedLanguage;
+    private int cachedTextLimit = -1;
 
     // Reusable list to interface with ScreenRadarLayout without per-frame ArrayList allocations
     private final List<ScreenRadarLayout.InputCandidate> reusableLayoutInputs = new ArrayList<>(MAX_DISPLAYED);
@@ -56,12 +55,6 @@ public final class ScreenRadarRenderer {
 
     public ScreenRadarRenderer(ClientSoundCapture capture) {
         this.capture = capture;
-        for (int i = 0; i < MAX_CANDIDATES; i++) {
-            this.candidatePool[i] = new ThreatRadarMerger.Candidate();
-        }
-        for (int i = 0; i < MAX_DISPLAYED; i++) {
-            this.selectedCandidates[i] = new ThreatRadarMerger.Candidate();
-        }
     }
 
     private static String formatDistance(double dist) {
@@ -92,85 +85,33 @@ public final class ScreenRadarRenderer {
         long activeNow = capture.currentActiveNanos();
 
         Font font = mc.font;
-        SubtitlePool pool = capture.subtitles();
         // Camera projection is built from framebuffer dimensions. GUI-scaled dimensions can differ slightly after ceil rounding.
         double projectionAspect = mc.getWindow().getHeight() > 0
                 ? (double) mc.getWindow().getWidth() / mc.getWindow().getHeight() : 1.0;
 
-        int candidateCount = 0;
-
-        for (SubtitlePool.Subtitle eventItem : pool.activeView()) {
-            long radarExpires = eventItem.radarExpiresNanos();
-            if (radarExpires <= 0) {
-                radarExpires = eventItem.triggeredNanos() + ThreatRegistry.radarDurationNanos(eventItem.soundId());
-            }
-            if (activeNow > 0 && activeNow >= radarExpires) continue;
-            if (eventItem.localPlayerShot()) continue;
-
-            String soundId = eventItem.soundId();
-
-            // Performance Optimization 1: Instant enum fast-path reject before any distance math
-            ThreatRegistry.ThreatLevel level = ThreatRegistry.evaluate(soundId);
-            if (level == ThreatRegistry.ThreatLevel.NONE) continue;
-
-            double dx = eventItem.x() - camPos.x;
-            double dy = eventItem.y() - camPos.y;
-            double dz = eventItem.z() - camPos.z;
-            double distSq = dx * dx + dy * dy + dz * dz;
-
-            // Performance Optimization 2: Distance-squared reject before square root
-            double maxDist = ThreatRegistry.maxRadarDistance(level);
-            if (maxDist <= 0.0 || distSq > maxDist * maxDist) continue;
-            // Reject sounds inside the local player's own hitbox (< 0.85m) to avoid self-sound false alarms
-            if (distSq < 0.85 * 0.85) continue;
-
-            double dist = Math.sqrt(distSq);
-            boolean isCritical = level == ThreatRegistry.ThreatLevel.CRITICAL;
-
-            // Performance Optimization 3: Pure zero-allocation frustum cone check before string formatting
-            boolean isOffScreen = ThreatRadarCalculator.isOffScreen(
-                    camPos.x, camPos.y, camPos.z,
-                    look.x, look.y, look.z,
-                    up.x, up.y, up.z,
-                    eventItem.x(), eventItem.y(), eventItem.z(),
-                    camera.getFov(),
-                    projectionAspect
-            );
-
-            // If threat is currently visible inside the player's 3D screen view, don't draw 2D radar badge
-            if (!isOffScreen) continue;
-
-            if (candidateCount < MAX_CANDIDATES) {
-                candidatePool[candidateCount++].set(soundId, eventItem.x(), eventItem.y(), eventItem.z(),
-                        level, dist, maxDist, eventItem.triggeredNanos());
-            }
-        }
-
-        if (candidateCount == 0) return;
-
-        // Nearby / same-direction clustering & escalation-override deduplication, then priority sort
-        int mergedCount = ThreatRadarMerger.mergeAndSort(
-                candidatePool, candidateCount, camPos.x, camPos.y, camPos.z, settings.radarMergeRange());
+        int mergedCount = radar.collectAndSort(capture.subtitles(), activeNow, camPos.x, camPos.y, camPos.z,
+                look.x, look.y, look.z, up.x, up.y, up.z, camera.getFov(), projectionAspect, settings.radarMergeRange());
+        if (mergedCount == 0) return;
 
         // Select up to MAX_DISPLAYED highest-priority off-screen candidates
         int count = Math.min(MAX_DISPLAYED, mergedCount);
         reusableLayoutInputs.clear();
         var currentLanguage = net.minecraft.locale.Language.getInstance();
-        if (currentLanguage != cachedLanguage) {
+        int textLimit = Math.max(0, screenWidth - 2 * (ScreenRadarLayout.SAFE_MARGIN_SIDES + BADGE_TEXT_PADDING));
+        if (currentLanguage != cachedLanguage || textLimit != cachedTextLimit) {
             cachedLanguage = currentLanguage;
-            java.util.Arrays.fill(cachedSoundIds, null);
+            cachedTextLimit = textLimit;
+            java.util.Arrays.fill(cachedNameKeys, null);
         }
 
         for (int i = 0; i < count; i++) {
-            ThreatRadarMerger.Candidate candidate = candidatePool[i];
-            ThreatRadarMerger.Candidate targetSlot = selectedCandidates[i];
-            targetSlot.set(candidate.soundId, candidate.soundX, candidate.soundY, candidate.soundZ,
-                    candidate.level, candidate.distance, candidate.maxDistance, candidate.triggeredNanos);
+            ThreatRadarMerger.Candidate candidate = radar.candidate(i);
 
             int tenths = (int) Math.round(candidate.distance * 10.0);
             String displayText;
             int textWidth;
-            if (candidate.soundId.equals(cachedSoundIds[i])
+            String nameKey = ThreatRegistry.resolveThreatNameKey(candidate.soundId);
+            if (nameKey.equals(cachedNameKeys[i])
                     && tenths == cachedTenths[i]
                     && candidate.isCritical == cachedCriticals[i]
                     && displayTexts[i] != null) {
@@ -178,14 +119,22 @@ public final class ScreenRadarRenderer {
                 textWidth = textWidths[i];
             } else {
                 String distStr = formatDistance(candidate.distance);
-                String threatName = Component.translatable(ThreatRegistry.resolveThreatNameKey(candidate.soundId)).getString();
-                displayText = (candidate.isCritical ? "⚠ " : "◆ ") + threatName + " " + distStr;
+                String threatName = Component.translatable(nameKey).getString();
+                String prefix = candidate.isCritical ? "⚠ " : "◆ ";
+                String suffix = " " + distStr;
+                displayText = prefix + threatName + suffix;
                 textWidth = font.width(displayText);
-                cachedSoundIds[i] = candidate.soundId;
+                if (textWidth > textLimit) {
+                    int nameBudget = Math.max(0, textLimit - font.width(prefix + "…" + suffix));
+                    String shortName = font.plainSubstrByWidth(threatName, nameBudget);
+                    displayText = font.plainSubstrByWidth(prefix + shortName + "…" + suffix, textLimit);
+                    textWidth = font.width(displayText);
+                }
+                cachedNameKeys[i] = nameKey;
                 cachedTenths[i] = tenths;
                 cachedCriticals[i] = candidate.isCritical;
             }
-            int halfWidth = textWidth / 2 + 8;
+            int halfWidth = (textWidth + 1) / 2 + BADGE_TEXT_PADDING;
             int halfHeight = 7;
             ThreatRadarCalculator.EdgeTarget target = ThreatRadarCalculator.calculate(
                     camPos.x, camPos.y, camPos.z,
@@ -217,9 +166,9 @@ public final class ScreenRadarRenderer {
         float opacityMultiplier = (float) Math.clamp(settings.opacity(), 0.1, 1.0);
         var colorblindMode = settings.colorblindMode();
 
-        for (int i = 0; i < plannedBadges.size(); i++) {
-            ScreenRadarLayout.PlannedBadge planned = plannedBadges.get(i);
-            ThreatRadarMerger.Candidate candidate = selectedCandidates[i];
+        for (var planned : plannedBadges) {
+            int i = planned.candidateIndex();
+            ThreatRadarMerger.Candidate candidate = radar.candidate(i);
             String displayText = displayTexts[i];
             int textWidth = textWidths[i];
             int halfWidth = halfWidths[i];

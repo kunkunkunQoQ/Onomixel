@@ -24,7 +24,8 @@ public final class ScreenRadarLayout {
     public static final int SAFE_MARGIN_TOP = 18;       // Clearance for boss health bar
     public static final int SAFE_MARGIN_BOTTOM = 52;    // Clearance for hotbar, health, armor, exp bar
     public static final int SAFE_MARGIN_SIDES = 8;      // Clearance for screen bezels
-    public static final int BADGE_SLOT_SPACING_Y = 19;  // Vertical slot spacing for left/right edges
+    private static final int BADGE_GAP_Y = 5;
+    public static final int BADGE_SLOT_SPACING_Y = 14 + BADGE_GAP_Y; // Standard 14px badge plus clearance
     public static final int BADGE_SLOT_SPACING_X = 8;   // Horizontal slot margin for top/bottom edges
 
     /**
@@ -45,13 +46,19 @@ public final class ScreenRadarLayout {
      * @param edgeSide Clamped screen edge side ({@link ThreatRadarCalculator.EdgeSide#LEFT},
      *                 {@link ThreatRadarCalculator.EdgeSide#RIGHT}, {@link ThreatRadarCalculator.EdgeSide#TOP},
      *                 or {@link ThreatRadarCalculator.EdgeSide#BOTTOM})
+     * @param candidateIndex index in the input list so skipped badges do not shift the labels of later candidates
      */
     public record PlannedBadge(
             float renderX,
             float renderY,
             float proximityAlpha,
-            ThreatRadarCalculator.EdgeSide edgeSide
-    ) {}
+            ThreatRadarCalculator.EdgeSide edgeSide,
+            int candidateIndex
+    ) {
+        public PlannedBadge(float renderX, float renderY, float proximityAlpha, ThreatRadarCalculator.EdgeSide edgeSide) {
+            this(renderX, renderY, proximityAlpha, edgeSide, -1);
+        }
+    }
 
     private ScreenRadarLayout() {}
 
@@ -101,13 +108,8 @@ public final class ScreenRadarLayout {
 
         List<PlannedBadge> results = new ArrayList<>(candidates.size());
 
-        // Track badge count per edge side to offset subsequent badges
-        int leftCount = 0;
-        int rightCount = 0;
-        int topCount = 0;
-        int bottomCount = 0;
-
-        for (InputCandidate candidate : candidates) {
+        for (int index = 0; index < candidates.size(); index++) {
+            InputCandidate candidate = candidates.get(index);
             ThreatRadarCalculator.EdgeTarget target = candidate.target();
             ThreatRadarCalculator.EdgeSide side = target.edgeSide();
             int halfW = Math.max(0, candidate.halfWidth());
@@ -115,67 +117,51 @@ public final class ScreenRadarLayout {
 
             float alpha = calculateProximityAlpha(candidate.distance(), candidate.maxDistance());
 
-            float finalX;
-            float finalY;
-
             float minY = halfH + SAFE_MARGIN_TOP;
             float maxY = screenHeight - halfH - SAFE_MARGIN_BOTTOM;
             float minX = halfW + SAFE_MARGIN_SIDES;
             float maxX = screenWidth - halfW - SAFE_MARGIN_SIDES;
 
-            switch (side) {
-                case LEFT -> {
-                    finalX = minX > maxX ? screenWidth * 0.5F : Math.clamp(Math.max(minX, target.screenX()), minX, maxX);
-                    // Stagger vertically downwards or upwards on collision
-                    float baseY = target.screenY() + (leftCount * BADGE_SLOT_SPACING_Y);
-                    // If overflowing bottom safe area, bounce upwards
-                    if (baseY + halfH > screenHeight - SAFE_MARGIN_BOTTOM) {
-                        baseY = target.screenY() - (leftCount * BADGE_SLOT_SPACING_Y);
-                    }
-                    finalY = minY > maxY ? screenHeight * 0.5F : Math.clamp(baseY, minY, maxY);
-                    leftCount++;
-                }
-                case RIGHT -> {
-                    finalX = minX > maxX ? screenWidth * 0.5F : Math.clamp(Math.min(maxX, target.screenX()), minX, maxX);
-                    float baseY = target.screenY() + (rightCount * BADGE_SLOT_SPACING_Y);
-                    if (baseY + halfH > screenHeight - SAFE_MARGIN_BOTTOM) {
-                        baseY = target.screenY() - (rightCount * BADGE_SLOT_SPACING_Y);
-                    }
-                    finalY = minY > maxY ? screenHeight * 0.5F : Math.clamp(baseY, minY, maxY);
-                    rightCount++;
-                }
-                case TOP -> {
-                    finalY = minY > maxY ? screenHeight * 0.5F : minY;
-                    // Horizontal flow expansion: stagger along X instead of dropping down to screen center!
-                    int step = (halfW * 2) + BADGE_SLOT_SPACING_X;
-                    float baseX = target.screenX() + (topCount * step);
-                    if (baseX + halfW > screenWidth - SAFE_MARGIN_SIDES) {
-                        baseX = target.screenX() - (topCount * step);
-                    }
-                    finalX = minX > maxX ? screenWidth * 0.5F : Math.clamp(baseX, minX, maxX);
-                    topCount++;
-                }
-                case BOTTOM -> {
-                    // Safe bottom lift to prevent overlapping with Minecraft hotbar & hearts
-                    finalY = minY > maxY ? screenHeight * 0.5F : maxY;
-                    // Horizontal flow expansion: stagger along X
-                    int step = (halfW * 2) + BADGE_SLOT_SPACING_X;
-                    float baseX = target.screenX() + (bottomCount * step);
-                    if (baseX + halfW > screenWidth - SAFE_MARGIN_SIDES) {
-                        baseX = target.screenX() - (bottomCount * step);
-                    }
-                    finalX = minX > maxX ? screenWidth * 0.5F : Math.clamp(baseX, minX, maxX);
-                    bottomCount++;
-                }
-                default -> {
-                    finalX = target.screenX();
-                    finalY = target.screenY();
-                }
+            if (minX > maxX) minX = maxX = screenWidth * 0.5f;
+            if (minY > maxY) minY = maxY = screenHeight * 0.5f;
+            boolean horizontal = side == ThreatRadarCalculator.EdgeSide.TOP || side == ThreatRadarCalculator.EdgeSide.BOTTOM;
+            float min = horizontal ? minX : minY;
+            float max = horizontal ? maxX : maxY;
+            float preferred = Math.clamp(horizontal ? target.screenX() : target.screenY(), min, max);
+            int halfSize = horizontal ? halfW : halfH;
+            float position = openPosition(candidates, results, side, horizontal, halfSize, preferred, 1);
+            if (position != preferred) {
+                float before = openPosition(candidates, results, side, horizontal, halfSize, preferred, -1);
+                if (before >= min && (position > max || preferred - before < position - preferred)) position = before;
             }
-
-            results.add(new PlannedBadge(finalX, finalY, alpha, side));
+            if (position > max) continue; // The higher-priority badges already fill this edge.
+            float x = horizontal ? position : Math.clamp(target.screenX(), minX, maxX);
+            float y = horizontal ? (side == ThreatRadarCalculator.EdgeSide.TOP ? minY : maxY) : position;
+            results.add(new PlannedBadge(x, y, alpha, side, index));
         }
 
         return results;
+    }
+
+    private static float openPosition(List<InputCandidate> candidates, List<PlannedBadge> placed,
+                                      ThreatRadarCalculator.EdgeSide side, boolean horizontal, int halfSize,
+                                      float preferred, int direction) {
+        float position = preferred;
+        // Each move clears one whole occupied interval in the requested direction.
+        for (int pass = 0; pass < placed.size(); pass++) {
+            float previous = position;
+            for (PlannedBadge badge : placed) {
+                if (badge.edgeSide() != side) continue;
+                InputCandidate occupied = candidates.get(badge.candidateIndex());
+                float center = horizontal ? badge.renderX() : badge.renderY();
+                float clearance = halfSize + (horizontal ? occupied.halfWidth() + BADGE_SLOT_SPACING_X
+                        : occupied.halfHeight() + BADGE_GAP_Y);
+                if (position > center - clearance && position < center + clearance) {
+                    position = center + direction * clearance;
+                }
+            }
+            if (position == previous) break;
+        }
+        return position;
     }
 }

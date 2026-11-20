@@ -224,7 +224,7 @@ public final class StreamingCaptionSession {
 
         // If currently in FADING_OUT due to a temporary heartbeat pause but sound is still active,
         // we can renew if the sound handle is confirmed not stopped (or null).
-        if (state == SessionState.FADING_OUT && stoppedAtNanos > 0) {
+        if (state == SessionState.FADING_OUT && stoppedAtNanos >= 0) {
             SoundSourceHandle handle = soundHandleRef.get();
             if (handle == null || !handle.isStopped()) {
                 state = SessionState.STREAMING;
@@ -275,7 +275,7 @@ public final class StreamingCaptionSession {
                 // Remains streaming while handle is alive and heartbeat continues
             }
             case FADING_OUT -> {
-                if (stoppedAtNanos > 0 && (nowNanos - stoppedAtNanos) >= FADE_OUT_DURATION_NANOS) {
+                if (stoppedAtNanos >= 0 && (nowNanos - stoppedAtNanos) >= FADE_OUT_DURATION_NANOS) {
                     state = SessionState.TERMINATED;
                 }
             }
@@ -308,7 +308,7 @@ public final class StreamingCaptionSession {
             }
             case STREAMING -> 1.0f;
             case FADING_OUT -> {
-                if (stoppedAtNanos <= 0) yield 0.0f;
+                if (stoppedAtNanos < 0) yield 0.0f;
                 long fadingElapsed = Math.max(0, nowNanos - stoppedAtNanos);
                 float remaining = 1.0f - ((float) fadingElapsed / FADE_OUT_DURATION_NANOS);
                 yield Math.clamp(remaining, 0.0f, 1.0f);

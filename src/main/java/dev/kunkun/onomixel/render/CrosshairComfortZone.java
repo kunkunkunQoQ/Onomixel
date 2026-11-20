@@ -130,9 +130,15 @@ public final class CrosshairComfortZone {
     private final double outerRadius;
     private final double repelStrength;
     private final Vector2 singularityDirection;
+    private final double horizontalScale;
 
     public CrosshairComfortZone(Vector2 center, double innerRadius, double outerRadius,
                                 double repelStrength, Vector2 singularityDirection) {
+        this(center, innerRadius, outerRadius, repelStrength, singularityDirection, 1.0);
+    }
+
+    private CrosshairComfortZone(Vector2 center, double innerRadius, double outerRadius,
+                                 double repelStrength, Vector2 singularityDirection, double horizontalScale) {
         if (center == null) {
             throw new IllegalArgumentException("center must not be null");
         }
@@ -154,6 +160,7 @@ public final class CrosshairComfortZone {
         this.outerRadius = outerRadius;
         this.repelStrength = repelStrength;
         this.singularityDirection = singularityDirection.normalize();
+        this.horizontalScale = horizontalScale;
     }
 
     public static CrosshairComfortZone standard() {
@@ -175,11 +182,11 @@ public final class CrosshairComfortZone {
         if (width <= 0 || height <= 0) {
             throw new IllegalArgumentException("Viewport dimensions must be positive");
         }
-        // In NDC: width spans 2.0 (-1 to 1), height spans 2.0 (-1 to 1).
-        // Use isotropic scale based on height.
+        // Keep radial distances in vertical NDC units. X distances need the viewport aspect
+        // to represent the same number of physical pixels as Y distances.
         double pxToNdc = 2.0 / height;
         return new CrosshairComfortZone(Vector2.ZERO, innerRadiusPx * pxToNdc, outerRadiusPx * pxToNdc,
-                repelStrengthPx * pxToNdc, DEFAULT_SINGULARITY_DIRECTION);
+                repelStrengthPx * pxToNdc, DEFAULT_SINGULARITY_DIRECTION, (double) width / height);
     }
 
     public Vector2 center() { return center; }
@@ -189,7 +196,8 @@ public final class CrosshairComfortZone {
     public Vector2 singularityDirection() { return singularityDirection; }
 
     public Zone zoneOf(double x, double y) {
-        double r = center.distance(new Vector2(x, y));
+        if (!Double.isFinite(x) || !Double.isFinite(y)) throw new IllegalArgumentException("Coordinates must be finite");
+        double r = Math.hypot((x - center.x()) * horizontalScale, y - center.y());
         if (r >= outerRadius) return Zone.OUTSIDE;
         if (r >= innerRadius) return Zone.BUFFER;
         return Zone.CORE;
@@ -217,7 +225,7 @@ public final class CrosshairComfortZone {
 
         double clampX = Math.clamp(center.x(), minX, maxX);
         double clampY = Math.clamp(center.y(), minY, maxY);
-        double dx = center.x() - clampX;
+        double dx = (center.x() - clampX) * horizontalScale;
         double dy = center.y() - clampY;
         double distSq = dx * dx + dy * dy;
 
@@ -235,7 +243,7 @@ public final class CrosshairComfortZone {
             return new RepulsionResult(Vector2.ZERO, outerRadius, Zone.OUTSIDE);
         }
 
-        double dx = x - center.x;
+        double dx = (x - center.x) * horizontalScale;
         double dy = y - center.y;
         double r = Math.sqrt(dx * dx + dy * dy);
 
@@ -247,8 +255,7 @@ public final class CrosshairComfortZone {
             // Buffer ring: F_crosshair = k_repel * ((outerRadius - r) / (outerRadius - innerRadius)) * r_hat
             double factor = (outerRadius - r) / (outerRadius - innerRadius);
             double magnitude = repelStrength * factor;
-            Vector2 rHat = new Vector2(dx / r, dy / r);
-            return new RepulsionResult(rHat.multiply(magnitude), r, Zone.BUFFER);
+            return new RepulsionResult(offset(dx / r, dy / r, magnitude), r, Zone.BUFFER);
         }
 
         // Core exclusion zone: r < innerRadius
@@ -263,7 +270,11 @@ public final class CrosshairComfortZone {
         } else {
             direction = new Vector2(dx / r, dy / r);
         }
-        return new RepulsionResult(direction.multiply(deltaR), r, Zone.CORE);
+        return new RepulsionResult(offset(direction.x(), direction.y(), deltaR), r, Zone.CORE);
+    }
+
+    private Vector2 offset(double directionX, double directionY, double magnitude) {
+        return new Vector2(directionX * magnitude / horizontalScale, directionY * magnitude);
     }
 
     public Vector2 calculateDisplacement(double x, double y) {
@@ -289,14 +300,15 @@ public final class CrosshairComfortZone {
         if (eval.zone() == Zone.OUTSIDE || eval.displacement().isZero() || Math.abs(bias) < 1e-9) {
             return eval.displacement();
         }
-        double dx = x - center.x;
+        double dx = (x - center.x) * horizontalScale;
         double dy = y - center.y;
         double r = Math.sqrt(dx * dx + dy * dy);
         Vector2 rHat = (r < 1e-9) ? singularityDirection : new Vector2(dx / r, dy / r);
         // Tangent vector 90 degrees CCW: (-rHat.y, rHat.x)
         Vector2 tHat = new Vector2(-rHat.y(), rHat.x());
         Vector2 blended = rHat.plus(tHat.multiply(bias)).normalize();
-        return blended.multiply(eval.displacement().length());
+        double magnitude = Math.hypot(eval.displacement().x() * horizontalScale, eval.displacement().y());
+        return offset(blended.x(), blended.y(), magnitude);
     }
 
     public Vector2 displace(double x, double y) {
@@ -322,7 +334,7 @@ public final class CrosshairComfortZone {
 
         double clampX = Math.clamp(center.x(), minX, maxX);
         double clampY = Math.clamp(center.y(), minY, maxY);
-        double dx = clampX - center.x();
+        double dx = (clampX - center.x()) * horizontalScale;
         double dy = clampY - center.y();
         double distSq = dx * dx + dy * dy;
         double r = Math.sqrt(distSq);
@@ -334,20 +346,19 @@ public final class CrosshairComfortZone {
             // Center is inside the AABB
             float cx = (minX + maxX) * 0.5f;
             float cy = (minY + maxY) * 0.5f;
-            double bcx = cx - center.x();
+            double bcx = (cx - center.x()) * horizontalScale;
             double bcy = cy - center.y();
             double bLen = Math.sqrt(bcx * bcx + bcy * bcy);
             Vector2 dir = bLen < 1e-9 ? singularityDirection : new Vector2(bcx / bLen, bcy / bLen);
             double deltaR = innerRadius + repelStrength;
-            return dir.multiply(deltaR);
+            return offset(dir.x(), dir.y(), deltaR);
         }
-        Vector2 rHat = new Vector2(dx / r, dy / r);
         if (r >= innerRadius) {
             double factor = (outerRadius - r) / (outerRadius - innerRadius);
-            return rHat.multiply(repelStrength * factor);
+            return offset(dx / r, dy / r, repelStrength * factor);
         }
         double deltaR = (innerRadius - r) + repelStrength;
-        return rHat.multiply(deltaR);
+        return offset(dx / r, dy / r, deltaR);
     }
 
     public BillboardProjection.Bounds displace(BillboardProjection.Bounds bounds) {

@@ -19,6 +19,7 @@ public final class SoundLifecycleCoordinator {
     private final BoundedDelayedQueue<?> delayedEmissions;
     private final SoundEmissionThrottle throttle;
     private final ProjectileOwnershipEvidence projectileEvidence;
+    private long worldGeneration;
 
     public SoundLifecycleCoordinator(
             SubtitlePool subtitles,
@@ -51,6 +52,7 @@ public final class SoundLifecycleCoordinator {
      * Cascades reset across all 8 subsystems during cross-dimension warps, level unloads, and respawns.
      */
     public void resetAllWorldState() {
+        worldGeneration++;
         subtitles.clear();
         delayedEmissions.clear();
         mailbox.clear();
@@ -70,6 +72,7 @@ public final class SoundLifecycleCoordinator {
     }
 
     public SubtitlePool subtitles() { return subtitles; }
+    public long worldGeneration() { return worldGeneration; }
     public SubtitleClock clock() { return clock; }
     @SuppressWarnings("unchecked")
     public <T, P> PlaybackMailbox<T, P> mailbox() { return (PlaybackMailbox<T, P>) mailbox; }

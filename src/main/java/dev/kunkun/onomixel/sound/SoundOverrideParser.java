@@ -25,7 +25,13 @@ public final class SoundOverrideParser {
             String visualTypeId,
             Integer vibrantColor,
             Integer pastelColor
-    ) {}
+    ) {
+        SoundDefinition definition() {
+            VisualType type = VisualTypeRegistry.getType(visualTypeId);
+            return new SoundDefinition(soundId, translationKey, semantics, SoundDefinition.Source.DEFAULT,
+                    type != null ? type : VisualTypes.IMPACT);
+        }
+    }
 
     public static List<OverrideEntry> parse(String jsonString) {
         if (jsonString == null || jsonString.isBlank()) return List.of();
@@ -75,19 +81,7 @@ public final class SoundOverrideParser {
 
     public static void apply(List<OverrideEntry> entries) {
         for (OverrideEntry entry : entries) {
-            VisualType vt = entry.visualTypeId() != null
-                    ? VisualTypeRegistry.getType(entry.visualTypeId())
-                    : null;
-            if (vt == null) vt = VisualTypes.IMPACT;
-
-            SoundDefinition def = new SoundDefinition(
-                    entry.soundId(),
-                    entry.translationKey(),
-                    entry.semantics(),
-                    SoundDefinition.Source.DEFAULT,
-                    vt
-            );
-            SoundDefinitions.registerOrOverride(def);
+            SoundDefinitions.registerOrOverride(entry.definition());
 
             if (entry.vibrantColor() != null) {
                 int pastel = entry.pastelColor() != null ? entry.pastelColor() : entry.vibrantColor();

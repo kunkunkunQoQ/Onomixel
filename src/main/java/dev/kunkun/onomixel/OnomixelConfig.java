@@ -73,10 +73,17 @@ public final class OnomixelConfig {
             .translation("onomixel.config.ambientDurationScale").defineInRange("ambientDurationScale", 0.80, 0.20, 2.0);
 
     public static final ModConfigSpec SPEC = BUILDER.build();
-    private static volatile CaptionSettings cachedSnapshot;
+    private static volatile CaptionSettings cachedSnapshot = CaptionSettings.defaults();
 
     public static CaptionSettings snapshot() {
-        if (!SPEC.isLoaded()) return CaptionSettings.defaults();
+        return cachedSnapshot;
+    }
+
+    public static void refreshSnapshot() {
+        if (!SPEC.isLoaded()) {
+            cachedSnapshot = CaptionSettings.defaults();
+            return;
+        }
         boolean enabled = ENABLED.get();
         DisplayMode mode = DISPLAY_MODE.get();
         ColorStyle style = COLOR_STYLE.get();
@@ -103,43 +110,11 @@ public final class OnomixelConfig {
         var aesthetic = AESTHETIC_STYLE.get();
         var colorblind = COLORBLIND_MODE.get();
 
-        CaptionSettings prev = cachedSnapshot;
-        if (prev != null
-                && prev.enabled() == enabled
-                && prev.mode() == mode
-                && prev.style() == style
-                && prev.maxDistance() == maxDist
-                && prev.maxVisible() == maxVis
-                && prev.durationNanos() == durNanos
-                && Double.compare(prev.textScale(), scale) == 0
-                && Double.compare(prev.opacity(), opacity) == 0
-                && prev.distanceScaling() == distScale
-                && prev.fade() == fade
-                && prev.spatialWords() == spatialWords
-                && prev.threatRadar() == threatRadar
-                && Double.compare(prev.radarMergeRange(), radarMergeRange) == 0
-                && prev.altitudeBadges() == altBadges
-                && prev.kineticTypography() == kinetic
-                && prev.speedOfSound() == speedOfSound
-                && prev.aestheticStyle() == aesthetic
-                && prev.colorblindMode() == colorblind
-                && Double.compare(prev.durations().step(), step) == 0
-                && Double.compare(prev.durations().pickup(), pickup) == 0
-                && Double.compare(prev.durations().interaction(), interaction) == 0
-                && Double.compare(prev.durations().breaking(), brk) == 0
-                && Double.compare(prev.durations().impact(), impact) == 0
-                && Double.compare(prev.durations().voice(), voice) == 0
-                && Double.compare(prev.durations().ambient(), ambient) == 0) {
-            return prev;
-        }
-
-        CaptionSettings next = new CaptionSettings(enabled, mode, style, maxDist, maxVis, durNanos,
+        cachedSnapshot = new CaptionSettings(enabled, mode, style, maxDist, maxVis, durNanos,
                 scale, opacity, distScale, fade,
                 new CaptionSettings.Durations(step, pickup, interaction, brk, impact, voice, ambient),
                 spatialWords, threatRadar, altBadges, kinetic, speedOfSound, aesthetic, colorblind,
                 radarMergeRange);
-        cachedSnapshot = next;
-        return next;
     }
 
     public static boolean spatialWords() {

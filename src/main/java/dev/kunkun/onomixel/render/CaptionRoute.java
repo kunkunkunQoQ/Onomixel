@@ -22,33 +22,41 @@ public final class CaptionRoute {
         if (current == null || targetSlot < 0 || targetSlot >= slotListSize || slots.get(targetSlot) == null) {
             return fallback;
         }
-        int obsCount = 0;
-        if (obstacles != null) {
-            for (int i = 0, n = obstacles.size(); i < n; i++) {
-                BillboardProjection.Bounds obstacle = obstacles.get(i);
-                if (obstacle != null && finite(obstacle)) {
-                    obsCount++;
-                }
-            }
-        }
-        if (obsCount == 0) {
-            return targetSlot;
-        }
+        if (obstacles == null || obstacles.isEmpty()) return targetSlot;
 
         int validCount = 0;
+        double halfWidth = width(current) / 2;
+        double halfHeight = height(current) / 2;
         for (int i = 0; i < slotListSize; i++) {
-            if (slots.get(i) != null) {
+            var slot = slots.get(i);
+            if (slot != null) {
                 validCount++;
+                halfWidth = Math.max(halfWidth, width(slot) / 2);
+                halfHeight = Math.max(halfHeight, height(slot) / 2);
             }
         }
+        double startX = centerX(current), startY = centerY(current);
+        double goalX = centerX(slots.get(targetSlot)), goalY = centerY(slots.get(targetSlot));
+        int obsCount = 0;
+        boolean directBlocked = false;
+        for (int i = 0; i < obstacles.size(); i++) {
+            var obstacle = obstacles.get(i);
+            if (obstacle == null || !finite(obstacle)) continue;
+            obsCount++;
+            if (!directBlocked) {
+                directBlocked = blocksSegment(startX, startY, goalX, goalY,
+                        (float) (obstacle.minX() - halfWidth), (float) (obstacle.minY() - halfHeight),
+                        (float) (obstacle.maxX() + halfWidth), (float) (obstacle.maxY() + halfHeight), true, true);
+            }
+        }
+        if (!directBlocked) return targetSlot;
+
         int nodeCount = validCount + 1;
         double[] xs = new double[nodeCount];
         double[] ys = new double[nodeCount];
         int[] originalIndices = new int[validCount];
-        xs[0] = centerX(current);
-        ys[0] = centerY(current);
-        double halfWidth = width(current) / 2;
-        double halfHeight = height(current) / 2;
+        xs[0] = startX;
+        ys[0] = startY;
         int goal = -1;
         int writeIdx = 0;
         for (int i = 0; i < slotListSize; i++) {
@@ -61,8 +69,6 @@ public final class CaptionRoute {
                 if (i == targetSlot) {
                     goal = node;
                 }
-                halfWidth = Math.max(halfWidth, width(slot) / 2);
-                halfHeight = Math.max(halfHeight, height(slot) / 2);
                 writeIdx++;
             }
         }
@@ -91,9 +97,6 @@ public final class CaptionRoute {
                 }
             }
         }
-        if (clear(xs[0], ys[0], xs[goal], ys[goal], expanded,
-                insideObstacle[0], insideObstacle[goal])) return targetSlot;
-
         double epsilon = Math.max(0.015, Math.min(width(current), height(current)) * 0.25);
         double[] distances = new double[nodeCount];
         int[] firstHop = new int[nodeCount];
@@ -139,19 +142,20 @@ public final class CaptionRoute {
     private static boolean clear(double x0, double y0, double x1, double y1,
                                  float[] expandedObstacles,
                                  boolean allowStartInside, boolean allowEndInside) {
-        float fx0 = (float) x0;
-        float fy0 = (float) y0;
-        float fx1 = (float) x1;
-        float fy1 = (float) y1;
         for (int base = 0; base < expandedObstacles.length; base += 4) {
-            boolean startsInside = containsBox(expandedObstacles, base, fx0, fy0);
-            boolean endsInside = containsBox(expandedObstacles, base, fx1, fy1);
-            if (segmentIntersects(x0, y0, x1, y1,
+            if (blocksSegment(x0, y0, x1, y1,
                     expandedObstacles[base], expandedObstacles[base + 1],
-                    expandedObstacles[base + 2], expandedObstacles[base + 3])
-                    && !(startsInside && allowStartInside) && !(endsInside && allowEndInside)) return false;
+                    expandedObstacles[base + 2], expandedObstacles[base + 3], allowStartInside, allowEndInside)) return false;
         }
         return true;
+    }
+
+    private static boolean blocksSegment(double x0, double y0, double x1, double y1,
+                                         float minX, float minY, float maxX, float maxY,
+                                         boolean allowStartInside, boolean allowEndInside) {
+        if (allowStartInside && (float) x0 >= minX && (float) x0 <= maxX && (float) y0 >= minY && (float) y0 <= maxY) return false;
+        if (allowEndInside && (float) x1 >= minX && (float) x1 <= maxX && (float) y1 >= minY && (float) y1 <= maxY) return false;
+        return segmentIntersects(x0, y0, x1, y1, minX, minY, maxX, maxY);
     }
 
     private static boolean segmentIntersects(double x0, double y0, double x1, double y1,

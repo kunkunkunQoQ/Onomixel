@@ -179,11 +179,12 @@ public final class ThreatRadarCalculator {
 
         // 6. Clamp to screen perimeter taking badge dimensions into account:
         // Safe inner boundary margins
-        int marginX = Math.max(badgeHalfWidth + 6, 32);
-        int marginY = Math.max(badgeHalfHeight + 6, 20);
-
+        screenWidth = Math.max(0, screenWidth);
+        screenHeight = Math.max(0, screenHeight);
         float cx = screenWidth / 2.0f;
         float cy = screenHeight / 2.0f;
+        float marginX = Math.min(cx, Math.max(badgeHalfWidth + 6.0f, 32.0f));
+        float marginY = Math.min(cy, Math.max(badgeHalfHeight + 6.0f, 20.0f));
         float halfW = cx - marginX;
         float halfH = cy - marginY;
 

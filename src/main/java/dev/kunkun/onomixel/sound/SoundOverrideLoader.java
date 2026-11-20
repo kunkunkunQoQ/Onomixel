@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -127,6 +128,7 @@ public final class SoundOverrideLoader {
      */
     public static int reloadAll(ResourceManager manager) {
         List<String> packJsons = new ArrayList<>();
+        List<String> legacyJsons = new ArrayList<>();
 
         // 1. Gather all modern custom_words.json from active resource packs
         if (manager != null) {
@@ -150,11 +152,7 @@ public final class SoundOverrideLoader {
                         id -> id.getPath().endsWith("sound_overrides.json"));
                 for (Map.Entry<Identifier, Resource> entry : legacyResources.entrySet()) {
                     try (Reader reader = new InputStreamReader(entry.getValue().open(), StandardCharsets.UTF_8)) {
-                        String content = readFully(reader);
-                        // Also apply legacy parser
-                        List<SoundOverrideParser.OverrideEntry> parsed = SoundOverrideParser.parse(content);
-                        SoundOverrideParser.apply(parsed);
-                        packJsons.add(content);
+                        legacyJsons.add(readFully(reader));
                     } catch (Exception e) {
                         LOGGER.log(System.Logger.Level.WARNING, "Failed to load legacy sound overrides from " + entry.getKey() + ": " + e.getMessage());
                     }
@@ -187,9 +185,25 @@ public final class SoundOverrideLoader {
         }
 
         // 4. Reload all tiers into SoundCustomizationManager
-        int loadedCount = SoundCustomizationManager.reloadAll(localConfigFile, packJsons);
+        int loadedCount = applyResources(localConfigFile, packJsons, legacyJsons);
         LOGGER.log(System.Logger.Level.INFO, "Onomixel: Hot-reloaded custom words. Successfully activated {0} custom rules.", loadedCount);
         return loadedCount;
+    }
+
+    static int applyResources(Path localConfigFile, List<String> modern, List<String> legacy) {
+        Map<String, SoundDefinition> definitions = new HashMap<>();
+        List<String> wordRules = new ArrayList<>(modern);
+        for (String json : legacy) {
+            wordRules.add(json);
+            for (var override : SoundOverrideParser.parse(json)) {
+                try {
+                    definitions.putIfAbsent(override.soundId(), override.definition());
+                } catch (IllegalArgumentException invalid) {
+                    LOGGER.log(System.Logger.Level.WARNING, "Skipping invalid sound definition " + override.soundId(), invalid);
+                }
+            }
+        }
+        return SoundCustomizationManager.reloadAll(localConfigFile, wordRules, definitions);
     }
 
     private static String readFully(Reader reader) throws Exception {

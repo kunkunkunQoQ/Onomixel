@@ -147,7 +147,7 @@ public final class DynamicSubtitleLayout {
     private record Job(SubtitlePool.Subtitle event, State state, Source source, Size size,
                        CaptionTextCache.Text text, VisualType type, CaptionVisuals.Effect effect, Point pivot, List<Point> points,
                        List<BillboardProjection.Bounds> silhouettes, List<BillboardProjection.Bounds> slotBounds,
-                       boolean darkAmbient, float alphaMultiplier, boolean hitstopEligible, float extraScale) {}
+                       boolean darkAmbient, float alphaMultiplier, boolean selfHurt, boolean hitstopEligible, float extraScale) {}
 
     /**
      * Groups hot-cell subtitles for xN clustering only when they resolve to identical
@@ -378,7 +378,11 @@ public final class DynamicSubtitleLayout {
             }
             text = texts.animate(text, settings.kineticTypography()
                     ? KineticTypography.resolveMode(type.id(), event.soundId(), customRule) : KineticTypography.Mode.NONE, age);
-            Size size = new Size(text.halfWidth() + 2, text.halfHeight() + 2);
+            boolean hitstopEligible = MangaHitstopEffect.isEligible(event.soundId(), event.semantics());
+            float burstRadius = hitstopEligible ? MangaHitstopEffect.visibleBurstRadius(
+                    MangaHitstopEffect.calculateStarburstAlpha(now - event.createdNanos()),
+                    MangaHitstopEffect.baseRadius(text.halfWidth(), text.halfHeight())) : 0;
+            Size size = new Size(Math.max(text.halfWidth() + 2, burstRadius), Math.max(text.halfHeight() + 2, burstRadius));
             boolean ambient = event.semantics() == SoundSemantics.AMBIENT || event.semantics() == SoundSemantics.IDLE_VOICE;
             boolean darkAmbient = resolveDarkAmbient(state, ambient, event.sourceX(), event.sourceY(), event.sourceZ(), now);
             // Reserve the largest pop and tilt envelope rather than just the unanimated baseline.
@@ -402,7 +406,6 @@ public final class DynamicSubtitleLayout {
             boolean useContact = block && contactDot > 0.15;
             if (useContact) pivot = contact;
             boolean selfHurt = isSelfHurt(event.soundId(), distance);
-            boolean hitstopEligible = MangaHitstopEffect.isEligible(event.soundId(), event.semantics());
             float extraScale = (customRule != null && customRule.scaleMultiplier() != null) ? customRule.scaleMultiplier() : 1.0f;
             if (BossChoreographyDirector.isBossSound(event.soundId())) {
                 var bossType = BossChoreographyDirector.identifyBoss(event.soundId());
@@ -411,7 +414,7 @@ public final class DynamicSubtitleLayout {
                     extraScale *= stage.visualScale();
                 }
             }
-            var streamingSession = StreamingCaptionSession.getSessionBySound(event.soundId());
+            var streamingSession = StreamingCaptionSession.getSession(event.id());
             float streamingAlpha = 1.0f;
             if (streamingSession != null && (streamingSession.isActive() || streamingSession.isFadingOut())) {
                 extraScale *= streamingSession.breathingScale(now);
@@ -453,7 +456,7 @@ public final class DynamicSubtitleLayout {
                         transform.project(eyePoint, camera.orientation, projection)));
             }
             jobs.add(new Job(event, state, source, size, text, type, effect, pivot,
-                    points, silhouettes, slots, darkAmbient, totalAlphaMultiplier, hitstopEligible, extraScale));
+                    points, silhouettes, slots, darkAmbient, totalAlphaMultiplier, selfHurt, hitstopEligible, extraScale));
             models.addAll(silhouettes);
         }
 
@@ -501,7 +504,7 @@ public final class DynamicSubtitleLayout {
                 java.util.Arrays.fill(rawScores, 0, numPoints, Double.POSITIVE_INFINITY);
                 int best = -1;
                 double bestScore = Double.POSITIVE_INFINITY;
-                boolean selfHurt = isSelfHurt(job.event.soundId(), Math.sqrt(job.pivot.distanceSquared(eyePoint)));
+                boolean selfHurt = job.selfHurt;
                 for (int slot = 0; slot < numPoints; slot++) {
                     Point candidate = job.points.get(slot);
                     if (!CaptionReadability.fullyOnScreen(job.slotBounds.get(slot))) continue;
@@ -636,7 +639,14 @@ public final class DynamicSubtitleLayout {
                     unrepelled.project(eyePoint, camera.orientation, projection), repulsionBounds,
                     crosshairZone, weaponMask), elapsed);
             var transform = resolve(job, position, context, state.repulsion);
+            var rectangle = transform.project(eyePoint, camera.orientation, projection);
+            if (!CaptionReadability.canDisplay(rectangle, job.selfHurt, crosshairZone)) {
+                state.lastSolve = Long.MIN_VALUE / 2;
+                occupied.remove(job.event.id());
+                continue;
+            }
             boolean canReuseFinalRay = state.finalRayClear
+                    && MangaHitstopEffect.spikeOpacity(transform.starburstAlpha()) < 4
                     && state.finalRaySlot == state.slot
                     && shouldReuseRayCheck(now, state.finalRayNanos,
                             eye.x, eye.y, eye.z, state.finalRayEyeX, state.finalRayEyeY, state.finalRayEyeZ,
@@ -667,13 +677,11 @@ public final class DynamicSubtitleLayout {
                 state.finalRayLookZ = forward.z();
                 state.finalRayClear = true;
             }
-            var rectangle = transform.project(eyePoint, camera.orientation, projection);
             collectOtherBounds(occupied, job.event.id(), scratchOtherBounds);
             if (CaptionReadability.needsEscape(rectangle, viewport)
                     || CaptionReadability.score(rectangle, models, scratchOtherBounds, viewport, 0) > 8) {
                 state.lastSolve = Math.min(state.lastSolve, now - LayoutScheduler.INTERVAL_NANOS);
             }
-            if (!CaptionReadability.fullyOnScreen(rectangle)) { occupied.remove(job.event.id()); continue; }
             occupied.put(job.event.id(), rectangle);
             state.drawnFrame = frame;
             result.add(new Placed(job.event, transform, job.text, job.alphaMultiplier));
